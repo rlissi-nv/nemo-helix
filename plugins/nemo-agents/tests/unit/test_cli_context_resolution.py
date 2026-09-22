@@ -93,7 +93,7 @@ class _FakeCLIContext:
 
     def __init__(
         self,
-        base_url: str = "http://config-host:9999",
+        base_url: str = "https://config-host:9999",
         token: str | None = "cfg-token",
         workspace: str | None = None,
     ) -> None:
@@ -122,8 +122,8 @@ def test_base_url_flag_overrides_configured_context() -> None:
     with _install_mock_transport(_capturing(captured)):
         result = CliRunner().invoke(
             app,
-            ["list", "--base-url", "http://flag-host:1111"],
-            obj=_FakeCLIContext(base_url="http://config-host:9999"),
+            ["list", "--base-url", "https://flag-host:1111"],
+            obj=_FakeCLIContext(base_url="https://config-host:9999"),
         )
 
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -144,7 +144,7 @@ def test_base_url_falls_back_to_configured_context() -> None:
         result = CliRunner().invoke(
             app,
             ["list"],
-            obj=_FakeCLIContext(base_url="http://config-host:9999"),
+            obj=_FakeCLIContext(base_url="https://config-host:9999"),
         )
 
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -160,8 +160,8 @@ def test_base_url_env_overrides_configured_context() -> None:
         result = CliRunner().invoke(
             app,
             ["list"],
-            obj=_FakeCLIContext(base_url="http://config-host:9999"),
-            env={"NEMO_BASE_URL": "http://env-host:2222"},
+            obj=_FakeCLIContext(base_url="https://config-host:9999"),
+            env={"NEMO_BASE_URL": "https://env-host:2222"},
         )
 
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -187,12 +187,12 @@ def test_resolved_target_is_echoed_to_stderr_only() -> None:
     with _install_mock_transport(_capturing([])):
         result = CliRunner().invoke(
             app,
-            ["list", "--base-url", "http://flag-host:1234", "-o", "json"],
+            ["list", "--base-url", "https://flag-host:1234", "-o", "json"],
             obj=_FakeCLIContext(),
         )
 
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
-    assert "Targeting http://flag-host:1234" in (result.stderr or "")
+    assert "Targeting https://flag-host:1234" in (result.stderr or "")
     assert "Targeting" not in result.stdout
 
 
@@ -208,7 +208,7 @@ def test_auth_header_attached_from_context() -> None:
     with _install_mock_transport(_capturing(captured)):
         result = CliRunner().invoke(
             app,
-            ["list", "--base-url", "http://h:1"],
+            ["list", "--base-url", "https://h:1"],
             obj=_FakeCLIContext(token="secret-token"),
         )
 
@@ -240,7 +240,7 @@ def test_platform_invoke_attaches_auth_and_targets_context_base_url() -> None:
         result = CliRunner().invoke(
             app,
             ["invoke", "--agent", "calc", "--input", "12*8", "--no-progress"],
-            obj=_FakeCLIContext(base_url="http://config-host:9999", token="tkn"),
+            obj=_FakeCLIContext(base_url="https://config-host:9999", token="tkn"),
         )
 
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
@@ -270,7 +270,7 @@ def _invoke_capturing(args: list[str], **kwargs: Any) -> tuple[Any, list[httpx.R
     captured: list[httpx.Request] = []
     app = AgentsCLI().get_cli()
     with _install_mock_transport(_capturing(captured)):
-        result = CliRunner().invoke(app, [*args, "--base-url", "http://h:1"], **kwargs)
+        result = CliRunner().invoke(app, [*args, "--base-url", "https://h:1"], **kwargs)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
     assert captured, "expected a request to be issued"
     return result, captured

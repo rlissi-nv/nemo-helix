@@ -61,7 +61,7 @@ def get_auth_client(request: Request) -> "AuthClient":
     return auth_client
 
 
-def get_principal_auth_headers() -> Dict[str, str]:
+def get_principal_auth_headers(*, destination_url: Optional[str] = None) -> Dict[str, str]:
     """Get principal authentication headers from the current auth context.
 
     This is a utility function for services that need to forward principal
@@ -86,7 +86,7 @@ def get_principal_auth_headers() -> Dict[str, str]:
         from nhx.common.auth import get_principal_auth_headers
 
         async def fetch_from_entities_service(resource_id: str):
-            headers = get_principal_auth_headers()
+            headers = get_principal_auth_headers(destination_url=entities_url)
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{entities_url}/v2/models/{resource_id}",
@@ -95,53 +95,48 @@ def get_principal_auth_headers() -> Dict[str, str]:
                 return response.json()
         ```
     """
-    auth_client = auth_client_context.get()
-    if auth_client and auth_client.principal:
-        return auth_client.principal.get_headers()
-    return {}
+    from nhx.common.platform_client_context import (
+        current_principal_auth_headers,
+        require_authorization_headers_destination,
+    )
+
+    headers = current_principal_auth_headers()
+    require_authorization_headers_destination(
+        headers,
+        destination_url=destination_url,
+        purpose="forwarded principal headers",
+    )
+    return headers
 
 
-def build_service_principal_headers(service_name: str) -> Dict[str, str]:
+def build_service_principal_headers(service_name: str, *, destination_url: Optional[str] = None) -> Dict[str, str]:
     """Build NeMo Helix auth headers for outbound service-to-service calls.
 
-    Returns:
-    - `X-NHX-Principal-Id: service:<service_name>` so the downstream service
-      can authorize the call.
-    - When the current auth context is a non-service principal, also forwards
-      `X-NHX-Principal-On-Behalf-Of`, `-Email`, and `-Groups` from
-      ``Principal.effective_principal`` so downstream PDP checks evaluate the
-      acting user (not the elevated service row alone).
+    In workload token-exchange mode, this returns a service workload Bearer
+    token, optionally issued on behalf of the current effective user. In
+    trusted-header mode, it returns `X-NHX-Principal-*` headers.
 
     Args:
         service_name: The calling service's name (ex. "guardrails").
+        destination_url: Optional HTTP(S) or UDS destination these headers will
+            be sent to. Bearer headers are allowed only for HTTPS, UDS, and
+            loopback HTTP endpoints.
 
     Returns:
         Header dictionary ready to merge into an outbound request.
     """
-    headers: Dict[str, str] = {
-        "X-NHX-Principal-Id": f"service:{service_name}",
-        "X-NHX-Actor-Aliases": f"service:{service_name}",
-    }
+    from nhx.common.platform_client_context import service_principal_auth_headers
 
-    auth_client = auth_client_context.get()
-    if auth_client is None or not auth_client.principal or not auth_client.principal.id:
-        return headers
+    return service_principal_auth_headers(service_name, destination_url=destination_url)
 
-    effective = auth_client.principal.effective_principal
-    if effective.caller_kind == "service_principal":
-        return headers
 
-    headers["X-NHX-Principal-On-Behalf-Of"] = effective.id
-    if effective.email:
-        headers["X-NHX-Principal-On-Behalf-Of-Email"] = effective.email
-    if effective.groups:
-        headers["X-NHX-Principal-On-Behalf-Of-Groups"] = ",".join(effective.groups)
-    if effective.account_id:
-        headers["X-NHX-Subject-Account-Id"] = effective.account_id
-    if effective.authz_aliases:
-        headers["X-NHX-Subject-Aliases"] = ",".join(effective.authz_aliases)
+async def build_service_principal_headers_async(
+    service_name: str, *, destination_url: Optional[str] = None
+) -> Dict[str, str]:
+    """Async variant of ``build_service_principal_headers`` for request handlers."""
+    from nhx.common.platform_client_context import service_principal_auth_headers_async
 
-    return headers
+    return await service_principal_auth_headers_async(service_name, destination_url=destination_url)
 
 
 @contextmanager

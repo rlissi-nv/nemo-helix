@@ -9,7 +9,7 @@ from typing import List, Optional, Type, Union
 import yaml
 from fastapi import HTTPException, Request, status
 from nemoguardrails import LLMRails
-from nhx.common.service.headers import build_downstream_service_headers
+from nhx.common.service.headers import build_downstream_service_headers_async
 from nhx.guardrails.api.schemas import ChatCompletionResponseChoice, CompletionResponseChoice
 from nhx.guardrails.app.constants import X_MODEL_AUTHORIZATION_HEADER
 from nhx.guardrails.app.handlers.utils import (
@@ -109,7 +109,7 @@ class CompletionRequestHandler:
 
         self.set_api_request_headers()
         self.ensure_request_id()
-        self.set_custom_headers()
+        await self.set_custom_headers()
         token = self.authenticate_and_set_headers()
 
         try:
@@ -340,12 +340,12 @@ class CompletionRequestHandler:
             log.error("Request ID not set in the request, middleware is not working")
         set_http_request_uid_into_context(request_id)
 
-    def set_custom_headers(self):
+    async def set_custom_headers(self):
         custom_headers = self._get_custom_headers()
         # Inject default NeMo Helix headers in addition to user-supplied custom headers.
         # These are required to ensure the Langchain HTTP client, used for inference
         # with non-main models, propagates the correct NeMo Helix auth and OTEL headers to IGW.
-        merged = {**custom_headers, **build_downstream_service_headers("guardrails")}
+        merged = {**custom_headers, **(await build_downstream_service_headers_async("guardrails"))}
         if merged:
             set_request_default_headers_into_context(merged)
 

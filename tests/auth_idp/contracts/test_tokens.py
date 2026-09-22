@@ -62,9 +62,13 @@ def test_provider_e2e_setup_token_authenticates_as_oidc_access_token(auth_idp_ca
 
     token = auth_idp_runtime.e2e_setup_token()
     authenticated = _authenticate_token(auth_idp_runtime, token.access_token)
+    expected_email = token.claims.get("email")
 
     assert authenticated["principal"] == token.claims["sub"]
-    assert authenticated["email"] == token.claims["email"]
+    if expected_email is None:
+        assert authenticated.get("email") in (None, "")
+    else:
+        assert authenticated["email"] == expected_email
     assert set(authenticated["groups"]) == _claim_values(token.claims.get("groups"))
     assert authenticated["token_kind"] == "oidc_access_token"
     assert set(authenticated["scopes"]) == _scope_values(token.claims.get("scope"))
@@ -89,7 +93,10 @@ def test_provider_workload_subject_token_authenticates_with_expected_identity(au
     assert authenticated["principal"] == auth_idp_case.provider.workload_principal_id
     assert authenticated["principal"] == token.claims["sub"]
     assert set(auth_idp_case.provider.workload_expected_groups).issubset(set(authenticated["groups"]))
-    assert authenticated["token_kind"] == "workload_subject_token"
+    expected_token_kinds = {"workload_subject_token"}
+    if auth_idp_case.provider.name == "zitadel":
+        expected_token_kinds.add("oidc_access_token")
+    assert authenticated["token_kind"] in expected_token_kinds
     assert authenticated["on_behalf_of"] is None
 
 

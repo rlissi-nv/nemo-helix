@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from nemo_deployments_plugin.auth_proxy import AUTH_PROXY_CONTAINER_NAME, build_auth_proxy_container
+from nemo_deployments_plugin.config import DeploymentsConfig
 from nemo_deployments_plugin.entities import DeploymentConfig
 from pydantic import ValidationError
 
@@ -52,6 +53,24 @@ def test_builds_sidecar_when_requested_and_auth_on() -> None:
     assert container.readiness_probe is not None
     assert container.readiness_probe.exec_action is not None
     assert "127.0.0.1" in " ".join(container.readiness_probe.exec_action.command)
+
+
+def test_sidecar_uses_configured_upstream_base_url() -> None:
+    deployments_config = DeploymentsConfig(auth_proxy_upstream_base_url="http://127.0.0.1:15001/")
+    with (
+        patch(f"{_MOD}.platform_auth_enabled", return_value=True),
+        patch(f"{_MOD}.get_nemo_config", return_value=deployments_config),
+        patch(f"{_MOD}.get_qualified_image", return_value="my-registry/nhx-api:local"),
+        patch(f"{_MOD}._upstream_base_url") as default_upstream,
+    ):
+        container = build_auth_proxy_container(
+            _config(auth_proxy_sidecar=True, auth_proxy_sidecar_identity="agents"), docker=True
+        )
+
+    assert container is not None
+    env = {e.name: e.value for e in container.env}
+    assert env["NHX_BASE_URL"] == "http://127.0.0.1:15001"
+    default_upstream.assert_not_called()
 
 
 def test_sidecar_stamps_on_behalf_of_when_set() -> None:

@@ -1304,7 +1304,7 @@ def test_environment_spec_create_via_typed_client_sends_auth_header() -> None:
                 "--spec",
                 '{"provider": "local"}',
                 "--base-url",
-                "http://test",
+                "https://test",
             ],
         )
 

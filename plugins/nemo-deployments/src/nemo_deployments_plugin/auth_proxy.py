@@ -70,6 +70,12 @@ def _upstream_base_url(*, docker: bool) -> str:
     return parts._replace(netloc=netloc).geturl()
 
 
+def _auth_proxy_upstream_base_url(config: DeploymentsConfig, *, docker: bool) -> str:
+    if config.auth_proxy_upstream_base_url:
+        return config.auth_proxy_upstream_base_url.rstrip("/")
+    return _upstream_base_url(docker=docker)
+
+
 def build_auth_proxy_container(config: DeploymentConfig, *, docker: bool = False) -> Container | None:
     """Return the auth-proxy sidecar Container for *config*, or None.
 
@@ -92,7 +98,7 @@ def build_auth_proxy_container(config: DeploymentConfig, *, docker: bool = False
     image = deployments_config.auth_proxy_image or get_qualified_image(deployments_config.auth_proxy_image_name)
 
     env = [
-        EnvVar(name="NHX_BASE_URL", value=_upstream_base_url(docker=docker)),
+        EnvVar(name="NHX_BASE_URL", value=_auth_proxy_upstream_base_url(deployments_config, docker=docker)),
         EnvVar(name=_AUTH_PROXY_PRINCIPAL_ENVVAR, value=identity),
         EnvVar(name=_AUTH_PROXY_HOST_ENVVAR, value="127.0.0.1"),
         EnvVar(name=_AUTH_PROXY_PORT_ENVVAR, value=str(port)),

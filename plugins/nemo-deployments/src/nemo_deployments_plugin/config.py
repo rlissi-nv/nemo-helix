@@ -87,3 +87,11 @@ class DeploymentsConfig(NemoConfig):
         default=8090,
         description="Loopback port the auth-proxy sidecar listens on; workloads target it as their platform base URL.",
     )
+    auth_proxy_upstream_base_url: str = Field(
+        default="",
+        description=(
+            "Optional upstream base URL for the auth-proxy sidecar to forward to. "
+            "Use this to point bearer-token forwarding at HTTPS or loopback HTTP "
+            "without changing the platform base URL used by other components."
+        ),
+    )

@@ -134,7 +134,8 @@ class TestChatCustomHeaders:
         assert "extra_headers" in call_kwargs
         assert call_kwargs["extra_headers"] == custom_headers
 
-    def test_custom_headers_extracted_from_request(self, mock_openai_clients, mock_chat_dependencies):
+    @pytest.mark.asyncio
+    async def test_custom_headers_extracted_from_request(self, mock_openai_clients, mock_chat_dependencies):
         """Test that custom headers are extracted from request and set in context."""
         custom_headers = {
             "X-Custom-Header1": "Value1",
@@ -173,7 +174,7 @@ class TestChatCustomHeaders:
         # set_custom_headers merges in service principal headers on top of custom headers.
         # No auth context is active in this test, so only X-NHX-Principal-Id is added
         # (X-NHX-Principal-On-Behalf-Of is omitted when there is no user in context).
-        request_handler.set_custom_headers()
+        await request_handler.set_custom_headers()
         context_headers = get_request_default_headers_from_context()
         assert context_headers == {
             **expected_custom_headers,
@@ -275,7 +276,8 @@ class TestLLMCustomHeaders:
 class TestCheckCustomHeaders:
     """Tests for CheckRequestHandler custom headers handling."""
 
-    def test_check_set_custom_headers_injects_service_principal(self):
+    @pytest.mark.asyncio
+    async def test_check_set_custom_headers_injects_service_principal(self):
         """set_custom_headers should inject service principal headers into context."""
         custom_headers = {
             "X-Custom-Header1": "Value1",
@@ -298,7 +300,7 @@ class TestCheckCustomHeaders:
             workspace="test-workspace",
         )
 
-        handler.set_custom_headers()
+        await handler.set_custom_headers()
         context_headers = get_request_default_headers_from_context()
 
         # All x-* headers are retained
@@ -308,7 +310,8 @@ class TestCheckCustomHeaders:
         # Service principal headers are injected
         assert context_headers["X-NHX-Principal-Id"] == "service:guardrails"
 
-    def test_check_set_custom_headers_no_incoming_headers(self):
+    @pytest.mark.asyncio
+    async def test_check_set_custom_headers_no_incoming_headers(self):
         """set_custom_headers should still inject service principal even with no custom headers."""
         request = MagicMock()
         request.headers = {}
@@ -327,7 +330,7 @@ class TestCheckCustomHeaders:
             workspace="test-workspace",
         )
 
-        handler.set_custom_headers()
+        await handler.set_custom_headers()
         context_headers = get_request_default_headers_from_context()
 
         assert context_headers["X-NHX-Principal-Id"] == "service:guardrails"
