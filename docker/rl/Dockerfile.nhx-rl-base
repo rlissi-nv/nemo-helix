@@ -338,23 +338,6 @@ EOF
 # Excluding here keeps them out of this layer - removing them later would leave them extractable.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git . /opt/nemo-rl
 
-# TEMPORARY source patches on the pinned NeMo-RL / Automodel / Gym trees. Bind-mounted rather
-# than COPY-ed: this stage already runs as ${BUILD_UID}, so a COPY would land root-owned and
-# could not be cleaned up afterwards, and anything left behind ships in the layer.
-#
-# nemo-rl-pinned-source.patch covers: NemotronH trunk layout, Automodel torch 2.11 version
-# compare, transformers dtype alias, v4_compatible checkpoint plumbing, DTensor async
-# checkpoint finalization, Gym setuptools<81 for pkg_resources, and quoting those PEP 508
-# specs in Gym's bash uv-pip command.
-# nemo-rl-gym-host-hf-cache.patch copies a vendored .huggingface snapshot into writable
-# work and points HF_HOME at it before RunHelper.start(); Hub/datasets offline flags
-# follow NHX_ENVIRONMENT_OFFLINE from the compiled job.
-# Drop hunks (or the file) once the corresponding pin contains the fix.
-RUN --mount=type=bind,source=docker/rl/patches,target=/patches \
-    cd /opt/nemo-rl && \
-    git apply -p1 --verbose /patches/nemo-rl-pinned-source.patch && \
-    git apply -p1 --verbose /patches/nemo-rl-gym-host-hf-cache.patch
-
 # Install the workspace ROOT (nemo-rl) editable. --no-install-project above installed every
 # DEPENDENCY and workspace MEMBER (incl. nemo-gym) but skipped the root; this adds it with --no-deps
 # (deps already present). .git is on disk now, so nemo_rl.__version__ picks up its +<sha> suffix.

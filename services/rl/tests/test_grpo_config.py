@@ -907,10 +907,13 @@ def test_automodel_all_weights_requests_consolidated_safetensors(
 ) -> None:
     monkeypatch.setenv("NHX_JOB_STORAGE_PVC_CLAIM", "nhx-job-storage")
     step, _ = _prepared_step(tmp_path)
-    checkpointing = compile_grpo_config(step, job_ctx)["checkpointing"]
+    compiled = compile_grpo_config(step, job_ctx)
+    checkpoint = compiled["policy"]["dtensor_cfg"]["checkpoint"]
 
-    assert checkpointing["model_save_format"] == "safetensors"
-    assert checkpointing["save_consolidated"] is True
+    assert checkpoint["model_save_format"] == "safetensors"
+    assert checkpoint["save_consolidated"] == "every"
+    assert "model_save_format" not in compiled["checkpointing"]
+    assert "save_consolidated" not in compiled["checkpointing"]
 
 
 def test_v4_compatible_defaults_on_for_consolidated_export(
@@ -920,9 +923,9 @@ def test_v4_compatible_defaults_on_for_consolidated_export(
     vLLM the platform serves the published model with cannot read."""
     monkeypatch.setenv("NHX_JOB_STORAGE_PVC_CLAIM", "nhx-job-storage")
     step, _ = _prepared_step(tmp_path)
-    checkpointing = compile_grpo_config(step, job_ctx)["checkpointing"]
+    checkpoint = compile_grpo_config(step, job_ctx)["policy"]["dtensor_cfg"]["checkpoint"]
 
-    assert checkpointing["v4_compatible"] is True
+    assert checkpoint["v4_compatible"] is True
 
 
 def test_v4_compatible_can_be_turned_off(
@@ -930,9 +933,9 @@ def test_v4_compatible_can_be_turned_off(
 ) -> None:
     monkeypatch.setenv("NHX_JOB_STORAGE_PVC_CLAIM", "nhx-job-storage")
     step, _ = _prepared_step(tmp_path, v4_compatible=False)
-    checkpointing = compile_grpo_config(step, job_ctx)["checkpointing"]
+    checkpoint = compile_grpo_config(step, job_ctx)["policy"]["dtensor_cfg"]["checkpoint"]
 
-    assert checkpointing["v4_compatible"] is False
+    assert checkpoint["v4_compatible"] is False
 
 
 def _write_base_model_config(tmp_path: Path, transformers_version: str | None) -> None:
@@ -985,10 +988,12 @@ def test_dtensor_v1_omits_model_save_format(
 ) -> None:
     monkeypatch.setenv("NHX_JOB_STORAGE_PVC_CLAIM", "nhx-job-storage")
     step, _ = _prepared_step(tmp_path, policy_backend=PolicyBackend.DTENSOR)
-    checkpointing = compile_grpo_config(step, job_ctx)["checkpointing"]
+    compiled = compile_grpo_config(step, job_ctx)
 
-    assert "model_save_format" not in checkpointing
-    assert "save_consolidated" not in checkpointing
+    assert "checkpoint" not in compiled["policy"]["dtensor_cfg"]
+    assert "model_save_format" not in compiled["checkpointing"]
+    assert "save_consolidated" not in compiled["checkpointing"]
+    assert "v4_compatible" not in compiled["checkpointing"]
 
 
 def test_automodel_lora_still_requests_consolidated_export(
@@ -1000,10 +1005,10 @@ def test_automodel_lora_still_requests_consolidated_export(
         finetuning_type=FinetuningType.LORA,
         lora=LoRAConfig(rank=8, alpha=16),
     )
-    checkpointing = compile_grpo_config(step, job_ctx)["checkpointing"]
+    checkpoint = compile_grpo_config(step, job_ctx)["policy"]["dtensor_cfg"]["checkpoint"]
 
-    assert checkpointing["save_consolidated"] is True
-    assert "model_save_format" not in checkpointing
+    assert checkpoint["save_consolidated"] == "every"
+    assert checkpoint["model_save_format"] == "safetensors"
 
 
 def test_expert_parallel_size_reaches_dtensor(
