@@ -147,23 +147,23 @@ RUN --mount=type=bind,source=docker/rl/scripts/build-gym-wheel.sh,target=/build/
 # ---- builder: uv sync RL + Gym with the extras we use ----
 # automodel (DPO and GRPO training on DTensor V2), mcore (Megatron training + Megatron-native
 # generation), vllm (generation), nemo_gym and modelopt are built. sglang and trtllm are not:
-# vLLM covers generation for every config we compile. flash-attn, mamba-ssm and causal-conv1d
-# come in with automodel and mcore.
+# vLLM covers generation for every config we compile. The CUDA extensions those extras
+# need are installed from the rl-cuda-ext-wheel image mounted at /mnt/wheels.
 FROM base AS builder
 ARG BUILD_UID=2000
 ARG BUILD_GID=2000
 WORKDIR /opt/nemo-rl
 
-# Arch knobs + cuDNN wiring (mirrors RL's own hermetic stage). The arch flags only affect the
-# SOURCE-compiled kernels (mamba-ssm, causal-conv1d, deep_ep, deep_gemm, TE); prebuilt wheels
-# (torch, vllm, flash-attn, flashinfer) ship fat binaries and are unaffected.
+# Arch knobs + cuDNN wiring (mirrors RL's own hermetic stage). causal-conv1d, mamba-ssm,
+# nv-grouped-gemm, fast-hadamard-transform, flash-mla, deep-ep, deep-gemm, flash-attn, and
+# transformer-engine-torch are prebuilt in rl-cuda-ext-wheel and installed from /mnt/wheels.
+# DeepEP still JIT-compiles kernels at runtime, so the toolkit and these arch flags stay.
+# torch, vllm, and flashinfer ship fat binaries and ignore TORCH_CUDA_ARCH_LIST.
 #
-# BUILD ARCH MUST BE >= 9.0: deep_ep / deep_gemm use Hopper-class features and fail nvcc at 8.0.
-# This is a BUILD-time constraint only and does NOT make the image Hopper-only at runtime - see
-# README.md, "Hardware: which GPUs run what".
-#
-# Keep at 90 (H100/H200) and/or 100 (B200/GB200); narrow to one for a faster dev build, e.g.
-#   --build-arg NVTE_CUDA_ARCHS=90 --build-arg TORCH_CUDA_ARCH_LIST="9.0"
+# The wheel image compiles 9.0 (H100/H200) and 10.0 (B200/GB200). deep_ep and deep_gemm use
+# Hopper-class features, so those wheels are not usable on 8.0. This image is not Hopper-only
+# at runtime for the rest of the stack - see README.md, "Hardware: which GPUs run what".
+# TORCH_CUDA_ARCH_LIST here only affects DeepEP's runtime JIT. The prebuilt wheels ignore it.
 ARG NVTE_BUILD_MAX_JOBS=8
 ARG NVTE_BUILD_THREADS_PER_JOB=2
 ARG NVTE_CUDA_ARCHS=90;100
@@ -202,13 +202,13 @@ ENV NVTE_BUILD_MAX_JOBS=${NVTE_BUILD_MAX_JOBS} \
 # layer's cache key depends on the dependency graph, not on every RL source file. See README.md,
 # "Layering for fast CI rebuilds".
 #
-# TensorRT-LLM is excluded (we never build the trtllm extra). Megatron-Bridge must stay: it is the
-# mcore extra's entry point, and its nested Megatron-LM submodule supplies megatron-core. Both are
-# editable path sources, so `uv run` also needs their metadata to validate the lock.
+# Megatron-Bridge must stay: it is the mcore extra's entry point, and its nested Megatron-LM
+# submodule supplies megatron-core. TensorRT-LLM stays too. pin-cuda-wheels.py runs `uv lock`,
+# which reads every path source, and tensorrt-llm's prepare_metadata_for_build_wheel returns
+# static metadata without compiling. .git directories are still excluded.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} pyproject.toml uv.lock ./
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} nemo_rl/__init__.py nemo_rl/package_info.py ./nemo_rl/
-COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=TensorRT-LLM-workspace --exclude=TensorRT-LLM-workspace/** \
-    --exclude=**/.git 3rdparty/ ./3rdparty/
+COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git 3rdparty/ ./3rdparty/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} research/ ./research/
 
 USER ${BUILD_UID}:${BUILD_GID}
@@ -217,9 +217,9 @@ USER ${BUILD_UID}:${BUILD_GID}
 # RL's uv.lock. Set to "" to relock if you bump RL to a commit whose lock has drifted.
 ARG UV_SYNC_MODE=--frozen
 
-# Warm the uv CACHE, one extra at a time (they conflict). This is where the heavy compiles happen
-# (mamba-ssm, causal-conv1d, deep_ep, deep_gemm, and Transformer-Engine via automodel); the wheels
-# land in the cache so the prefetch below materializes each venv without recompiling.
+# Warm the uv CACHE, one extra at a time (they conflict). The nine CUDA extensions install
+# from /mnt/wheels; pin-cuda-wheels.py rewrites this image's pyproject.toml and uv.lock first.
+# The fork's own files are untouched. The populated cache is what the prefetch below installs.
 #
 # `uv sync` is EXACT, so these do NOT accumulate - each --extra prunes the previous one and the base
 # venv ends up with default deps + groups only. The populated cache is the real product.
@@ -230,22 +230,30 @@ ARG UV_SYNC_MODE=--frozen
 #
 # --no-install-project installs dependencies but not nemo-rl itself; the root package is added
 # editable in a cheap step after the full-source COPY.
-# automodel and mcore cap NVTE_BUILD_MAX_JOBS at 2 so ptxas does not OOM the arm64 builder.
+#
+# The rewritten lock names each wheel under /mnt/wheels. UV_LINK_MODE=symlink copies those
+# wheels into /opt/uv_cache during this sync, so the mount is not needed at runtime. The full
+# source COPY below puts the fork's pyproject.toml and uv.lock back; /tmp keeps this copy and
+# the next RUN restores it. The prefetch RUN mounts /mnt/wheels again because the lock paths
+# are absolute.
 # Then drop ray's vendored aiohttp and jars, and PyNvVideoCodec's bundled FFmpeg, before prefetch
 # can symlink a venv at them. The package stays cached, so uv does not re-download it.
-RUN <<"EOF" bash -exu
+RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
+    --mount=type=bind,source=docker/rl/scripts/pin-cuda-wheels.py,target=/tmp/pin-cuda-wheels.py,readonly \
+    <<"EOF" bash -exu
 umask 022
 export UV_LINK_MODE=symlink
+python3.13 /tmp/pin-cuda-wheels.py /opt/nemo-rl
+cp /opt/nemo-rl/pyproject.toml /tmp/pinned-pyproject.toml
+cp /opt/nemo-rl/uv.lock /tmp/pinned-uv.lock
 uv venv --seed
 
 uv sync ${UV_SYNC_MODE} --no-install-project
 
 uv sync ${UV_SYNC_MODE} --extra vllm --no-install-project
 
-export NVTE_BUILD_MAX_JOBS=2
 uv sync ${UV_SYNC_MODE} --extra automodel --no-install-project
 uv sync ${UV_SYNC_MODE} --extra mcore --no-install-project
-unset NVTE_BUILD_MAX_JOBS
 uv sync ${UV_SYNC_MODE} --extra modelopt --no-install-project
 uv sync ${UV_SYNC_MODE} --extra nemo_gym --no-install-project
 uv sync ${UV_SYNC_MODE} --all-groups --no-install-project
@@ -283,6 +291,13 @@ EOF
 # Excluding here keeps them out of this layer - removing them later would leave them extractable.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git . /opt/nemo-rl
 
+# The COPY above restores the fork's pyproject.toml and uv.lock (git sources). Put the
+# /mnt/wheels lock back before anything syncs again. The prefetch RUN mounts the wheels
+# because that lock records absolute /mnt/wheels paths.
+RUN umask 022 && \
+    cp /tmp/pinned-pyproject.toml /opt/nemo-rl/pyproject.toml && \
+    cp /tmp/pinned-uv.lock /opt/nemo-rl/uv.lock
+
 # Install the workspace ROOT (nemo-rl) editable. --no-install-project above installed every
 # DEPENDENCY and workspace MEMBER (incl. nemo-gym) but skipped the root; this adds it with --no-deps
 # (deps already present). .git is on disk now, so nemo_rl.__version__ picks up its +<sha> suffix.
@@ -313,7 +328,8 @@ RUN umask 022 && uv pip install --python /opt/nemo_rl_venv/bin/python --no-deps 
 # is critic-free), RolloutReassemblerActor, and the async-GRPO bookkeeping actors; those build on
 # the node if selected. The loop fails the build if a filter no longer matches; the vLLM actors
 # are included because the publish stage privatizes vllm/ in whatever venvs exist.
-RUN <<"EOF" bash -exu
+RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
+    <<"EOF" bash -exu
 umask 022
 export UV_LINK_MODE=symlink
 uv run nemo_rl/utils/prefetch_venvs.py \
