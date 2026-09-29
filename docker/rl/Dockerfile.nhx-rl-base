@@ -207,7 +207,11 @@ ENV NVTE_BUILD_MAX_JOBS=${NVTE_BUILD_MAX_JOBS} \
 # which reads every path source, and tensorrt-llm's prepare_metadata_for_build_wheel returns
 # static metadata without compiling. .git directories are still excluded.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} pyproject.toml uv.lock ./
-COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} nemo_rl/__init__.py nemo_rl/package_info.py ./nemo_rl/
+# setuptools reads the dynamic version by importing nemo_rl. __init__.py imports
+# transformers_compat at module level, and that module is stdlib-only until the
+# patch actually runs, so it has to be present for uv lock/sync metadata.
+COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} \
+    nemo_rl/__init__.py nemo_rl/package_info.py nemo_rl/transformers_compat.py ./nemo_rl/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git 3rdparty/ ./3rdparty/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} research/ ./research/
 
