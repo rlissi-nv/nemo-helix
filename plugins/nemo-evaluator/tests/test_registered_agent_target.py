@@ -16,18 +16,16 @@ import pytest
 from nemo_evaluator.api.schemas import AgentRef
 from nemo_evaluator.filesets import FilesetRef
 from nemo_evaluator.jobs.agent_compiler import _secret_refs, compile_agent_eval_job
-from nemo_evaluator.jobs.agent_evaluate import (
-    _FABRIC_ADAPTER_EXTRAS,
-    REGISTERED_AGENT_HARBOR_IMPORT_PATH,
-    AgentEvalJob,
-    _resolve_registered_agent,
-)
+from nemo_evaluator.jobs.agent_evaluate import _FABRIC_ADAPTER_EXTRAS, AgentEvalJob, _resolve_registered_agent
 from nemo_evaluator.jobs.agent_spec import (
+    REGISTERED_AGENT_HARBOR_IMPORT_PATH,
     AgentEvalInputSpec,
     AgentEvalSpec,
     FabricConfigSource,
     RegisteredAgentSource,
     FabricRunnerTarget,
+    HarborBuiltinAgentSource,
+    HarborImportedAgentSource,
     HarborRunnerTarget,
     registered_agent_files,
     registered_agent_name,
@@ -344,9 +342,7 @@ async def test_conflicting_environment_secret_bindings_are_a_submit_error(mocker
 def _harbor_by_agent(
     agent: AgentRef = _AGENT, environment: EnvironmentSpecInline | None = None, **kwargs: Any
 ) -> HarborRunnerTarget:
-    return HarborRunnerTarget(
-        registered_agent=RegisteredAgentSource(agent=agent, environment=environment), **kwargs
-    )
+    return HarborRunnerTarget(source=RegisteredAgentSource(agent=agent, environment=environment), **kwargs)
 
 
 async def test_harbor_target_by_agent_selects_the_installed_fabric_agent_with_the_whole_config(
@@ -357,8 +353,8 @@ async def test_harbor_target_by_agent_selects_the_installed_fabric_agent_with_th
     resolved = await _resolve(_harbor_by_agent(n_attempts=2, agent_kwargs={"fabric_workspace": "/app"}))
 
     assert isinstance(resolved, HarborRunnerTarget)
-    assert resolved.registered_agent is not None
-    assert resolved.registered_agent.agent == AgentRef(root="dev/calculator-agent")  # kept, qualified
+    assert isinstance(resolved.source, RegisteredAgentSource)
+    assert resolved.source.agent == AgentRef(root="dev/calculator-agent")  # kept, qualified
     assert resolved.agent_import_path == REGISTERED_AGENT_HARBOR_IMPORT_PATH
     assert resolved.agent_name is None
     assert resolved.n_attempts == 2
@@ -448,38 +444,87 @@ async def test_a_harbor_agent_whose_config_refers_to_files_stages_its_ethos_file
 
 def test_harbor_fabric_config_may_name_a_credential_variable_but_not_hold_one() -> None:
     HarborRunnerTarget(
-        agent_import_path="x:Y", agent_kwargs={"fabric_config": {"models": {"default": {"api_key_env": "K"}}}}
+        source=HarborImportedAgentSource(import_path="x:Y"),
+        agent_kwargs={"fabric_config": {"models": {"default": {"api_key_env": "K"}}}},
     )
 
     for value in ("nvapi-" + "a" * 60, "not-used"):
         leaked = {"environment": {"env": {"NVIDIA_API_KEY": value}}}
         with pytest.raises(ValidationError, match="look like plaintext credentials"):
-            HarborRunnerTarget(agent_import_path="x:Y", agent_kwargs={"fabric_config": leaked})
+            HarborRunnerTarget(
+                source=HarborImportedAgentSource(import_path="x:Y"), agent_kwargs={"fabric_config": leaked}
+            )
 
 
-def test_a_submitted_harbor_registered_agent_owns_the_harbor_agent_selection() -> None:
-    """The Harbor fields a registered agent fills in cannot also come from the submitter."""
+def test_a_harbor_source_is_exactly_one_agent() -> None:
+    """The wire type cannot name two agents at once, or none; the schema, not a validator, says so."""
+    assert HarborRunnerTarget().source == HarborBuiltinAgentSource(name="oracle")
+    for source in (
+        {},
+        {"name": "oracle", "import_path": "x:Y"},
+        {"name": "oracle", "agent": "calc"},
+        {"import_path": "x:Y", "agent": "calc"},
+        {"agent": "calc", "model_name": "nvidia/other"},
+        {"model_name": "m"},
+    ):
+        with pytest.raises(ValidationError):
+            HarborRunnerTarget.model_validate({"source": source})
+
+
+def test_the_harbor_source_implies_what_harbor_is_handed() -> None:
+    """The runtime translation reads three agent settings; each source shape fills them its own way."""
+    builtin = HarborRunnerTarget(source=HarborBuiltinAgentSource(name="codex", model_name="m"))
+    imported = HarborRunnerTarget(source=HarborImportedAgentSource(import_path="x:Y", model_name="m"))
+    registered = _harbor_by_agent(AgentRef(root="calc"))
+    assert (builtin.agent_name, builtin.agent_import_path, builtin.agent_model_name) == ("codex", None, "m")
+    assert (imported.agent_name, imported.agent_import_path, imported.agent_model_name) == (None, "x:Y", "m")
+    assert (registered.agent_name, registered.agent_import_path, registered.agent_model_name) == (
+        None,
+        REGISTERED_AGENT_HARBOR_IMPORT_PATH,
+        None,
+    )
+    assert target_agent_identity(registered) == ("calc", None)
+
+
+def test_the_legacy_flat_harbor_agent_fields_are_lifted_into_source_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One release of tolerance, with the precedence the flat fields had: registered over imported over built-in."""
+    cases = [
+        ({"agent_name": "codex", "agent_model_name": "m"}, HarborBuiltinAgentSource(name="codex", model_name="m")),
+        ({"agent_name": "codex", "agent_import_path": "x:Y"}, HarborImportedAgentSource(import_path="x:Y")),
+        ({"agent_model_name": "m"}, HarborBuiltinAgentSource(name="oracle", model_name="m")),
+        ({"agent_name": None}, HarborBuiltinAgentSource(name="oracle")),
+        (
+            {"registered_agent": {"agent": "dev/calc"}, "agent_name": None, "agent_import_path": "x:Y"},
+            RegisteredAgentSource(agent=AgentRef(root="dev/calc")),
+        ),
+    ]
+    for legacy, source in cases:
+        with caplog.at_level("WARNING", logger="nemo_evaluator.jobs.agent_spec"):
+            target = HarborRunnerTarget.model_validate({"kind": "harbor", "reward_key": "r", **legacy})
+        assert target.source == source, legacy
+        assert target.reward_key == "r"
+    assert caplog.text.count("deprecated") == len(cases)
+    assert "source" in HarborRunnerTarget.model_fields and "agent_name" not in HarborRunnerTarget.model_fields
+
+
+def test_a_submitted_harbor_registered_agent_owns_its_fabric_config() -> None:
     tasks = [{"id": "t", "intent": "x", "inputs": {}}]
-    for extra, message in [
-        ({"agent_import_path": "x:Y"}, "cannot be combined with `registered_agent`"),
-        ({"agent_model_name": "nvidia/other"}, "cannot be combined with `registered_agent`"),
-        ({"agent_kwargs": {"fabric_config": {}}}, "derived from `registered_agent`"),
-    ]:
-        target = {"kind": "harbor", "registered_agent": {"agent": "calc"}, **extra}
-        with pytest.raises(ValidationError, match=message):
-            AgentEvalInputSpec.model_validate({"tasks": tasks, "target": target})
-    assert target_agent_identity(_harbor_by_agent(AgentRef(root="calc"))) == ("calc", None)
+    target = {"kind": "harbor", "source": {"agent": "calc"}, "agent_kwargs": {"fabric_config": {}}}
+    with pytest.raises(ValidationError, match="derived from the registered `agent`"):
+        AgentEvalInputSpec.model_validate({"tasks": tasks, "target": target})
+    AgentEvalInputSpec.model_validate({"tasks": tasks, "target": {**target, "source": {"import_path": "x:Y"}}})
 
 
 def test_canonical_spec_refuses_an_unresolved_harbor_registered_agent() -> None:
     with pytest.raises(ValidationError, match="must be resolved before run"):
         AgentEvalSpec.model_validate(
-            {"tasks": [_RESOLVED_TASK], "target": {"kind": "harbor", "registered_agent": {"agent": "calc"}}}
+            {"tasks": [_RESOLVED_TASK], "target": {"kind": "harbor", "source": {"agent": "calc"}}}
         )
     resolved = {
         "kind": "harbor",
-        "registered_agent": {"agent": "dev/calc"},
-        "agent_import_path": REGISTERED_AGENT_HARBOR_IMPORT_PATH,
+        "source": {"agent": "dev/calc"},
         "agent_kwargs": {"fabric_config": {"harness": {"adapter_id": "x"}}},
     }
     AgentEvalSpec.model_validate({"tasks": [_RESOLVED_TASK], "target": resolved})
@@ -488,7 +533,9 @@ def test_canonical_spec_refuses_an_unresolved_harbor_registered_agent() -> None:
 def test_harbor_timeout_multipliers_reach_the_runtime(tmp_path: Path) -> None:
     ctx = _job_context(tmp_path)
     target = HarborRunnerTarget(
-        agent_import_path="x:Y", agent_setup_timeout_multiplier=12.0, agent_timeout_multiplier=5.0
+        source=HarborImportedAgentSource(import_path="x:Y"),
+        agent_setup_timeout_multiplier=12.0,
+        agent_timeout_multiplier=5.0,
     )
     runtime, _, _ = AgentEvalJob._resolve_target(target, ctx)
     config = getattr(runtime, "_config")
@@ -499,8 +546,7 @@ def test_staged_harbor_agent_files_become_the_fabric_config_bundle(tmp_path: Pat
     ctx = _job_context(tmp_path)
     target = HarborRunnerTarget.model_validate(
         {
-            "registered_agent": {"agent": "dev/calculator-agent"},
-            "agent_import_path": REGISTERED_AGENT_HARBOR_IMPORT_PATH,
+            "source": {"agent": "dev/calculator-agent"},
             "agent_kwargs": {"fabric_config": {"harness": {"adapter_id": "x"}, "skills": {"paths": ["skills/a"]}}},
         }
     )

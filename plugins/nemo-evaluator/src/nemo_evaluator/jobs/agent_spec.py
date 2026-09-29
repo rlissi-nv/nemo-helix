@@ -197,6 +197,40 @@ class FabricRunnerTarget(BaseModel):
         return self.source.model if isinstance(self.source, FabricConfigSource) else None
 
 
+class HarborBuiltinAgentSource(BaseModel):
+    """One of Harbor's built-in agents, selected by name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="Built-in Harbor agent to run, e.g. `oracle`.")
+    model_name: str | None = Field(default=None, description="Optional model slug passed to the agent.")
+
+
+class HarborImportedAgentSource(BaseModel):
+    """A Harbor agent class the run environment can already import."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    import_path: str = Field(
+        description="Harbor agent import path, e.g. `harbor_wrapper:WrappedAgent`. The module must already be "
+        "importable in the run environment.",
+    )
+    model_name: str | None = Field(default=None, description="Optional model slug passed to the agent.")
+
+
+#: What Harbor runs in each task container. The three shapes share no required field, so a document is
+#: exactly one of them.
+HarborAgentSource: TypeAlias = HarborBuiltinAgentSource | HarborImportedAgentSource | RegisteredAgentSource
+
+#: The SDK's installed Fabric agent, which a registered agent runs as: it brings its own Python, so any
+#: task image works.
+REGISTERED_AGENT_HARBOR_IMPORT_PATH = (
+    "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_installed_agent:FabricInstalledAgent"
+)
+
+_LEGACY_HARBOR_AGENT_FIELDS = ("registered_agent", "agent_name", "agent_import_path", "agent_model_name")
+
+
 class HarborRunnerTarget(BaseModel):
     """Generate trials by driving a Harbor job through the SDK's :class:`HarborAgentTaskRunner`.
 
@@ -210,24 +244,14 @@ class HarborRunnerTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["harbor"] = "harbor"
-    registered_agent: RegisteredAgentSource | None = Field(
-        default=None,
-        description="A registered platform agent to run inside each task container, in place of `agent_name` / "
-        "`agent_import_path`. Resolved at submit into `agent_import_path` (the SDK's installed Fabric agent) and "
-        "`agent_kwargs.fabric_config`, so the agent runs as registered — identity, skills, MCP servers, and "
-        "telemetry included — and kept, qualified, as the run's provenance.",
+    source: HarborAgentSource = Field(
+        default_factory=lambda: HarborBuiltinAgentSource(name="oracle"),
+        description="The agent Harbor runs in each task container: a built-in agent by `name`, your own by "
+        "`import_path`, or a registered platform `agent` (with an optional `environment`). A registered agent is "
+        "resolved at submit into the SDK's installed Fabric agent with the agent's translated config in "
+        "`agent_kwargs.fabric_config`, so it runs as registered — identity, skills, MCP servers, and telemetry "
+        "included — and stays, qualified, as the run's provenance.",
     )
-    agent_name: str | None = Field(
-        default="oracle",
-        description="Built-in Harbor agent to run (e.g. 'oracle'). Ignored when `agent_import_path` or "
-        "`registered_agent` is set.",
-    )
-    agent_import_path: str | None = Field(
-        default=None,
-        description="Custom Harbor agent import path (e.g. 'harbor_wrapper:WrappedAgent'); overrides `agent_name`. "
-        "The module must already be importable in the run environment.",
-    )
-    agent_model_name: str | None = Field(default=None, description="Optional model slug passed to the Harbor agent.")
     agent_kwargs: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="Keyword arguments forwarded to the Harbor agent's constructor, the equivalent of Harbor's "
@@ -263,10 +287,53 @@ class HarborRunnerTarget(BaseModel):
         default=None, gt=0, description="Harbor agent-phase timeout multiplier, applied to every trial."
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_agent_fields(cls, data: Any) -> Any:
+        """Accept the pre-``source`` flat fields for one release. Deprecated since 0.8; remove in 0.9."""
+        if not isinstance(data, dict) or "source" in data or not any(k in data for k in _LEGACY_HARBOR_AGENT_FIELDS):
+            return data
+        lifted = {key: value for key, value in data.items() if key not in _LEGACY_HARBOR_AGENT_FIELDS}
+        model_name = data.get("agent_model_name")
+        with_model = {"model_name": model_name} if model_name is not None else {}
+        if data.get("registered_agent") is not None:
+            lifted["source"] = data["registered_agent"]
+        elif data.get("agent_import_path") is not None:
+            lifted["source"] = {"import_path": data["agent_import_path"], **with_model}
+        elif data.get("agent_name") is not None:
+            lifted["source"] = {"name": data["agent_name"], **with_model}
+        elif model_name is not None:
+            lifted["source"] = {"name": "oracle", **with_model}
+        logger.warning(
+            "HarborRunnerTarget: top-level `agent_name` / `agent_import_path` / `agent_model_name` / "
+            "`registered_agent` are deprecated; select the agent under `source`. This shape stops being accepted "
+            "in the release after 0.8."
+        )
+        return lifted
+
     @model_validator(mode="after")
     def _agent_kwargs_carry_no_credentials(self) -> Self:
         require_no_plaintext_credentials(self.agent_kwargs, field="agent_kwargs", alternative="env_secrets")
         return self
+
+    @property
+    def agent_name(self) -> str | None:
+        """The built-in Harbor agent the source names, if it names one."""
+        return self.source.name if isinstance(self.source, HarborBuiltinAgentSource) else None
+
+    @property
+    def agent_import_path(self) -> str | None:
+        """The Harbor agent class to import; a registered agent runs as the installed Fabric agent."""
+        if isinstance(self.source, HarborImportedAgentSource):
+            return self.source.import_path
+        if isinstance(self.source, RegisteredAgentSource):
+            return REGISTERED_AGENT_HARBOR_IMPORT_PATH
+        return None
+
+    @property
+    def agent_model_name(self) -> str | None:
+        """The model slug handed to a built-in or imported agent."""
+        return None if isinstance(self.source, RegisteredAgentSource) else self.source.model_name
 
 
 class GymRunnerTarget(BaseModel):
@@ -417,10 +484,10 @@ Target: TypeAlias = ModelTarget | AgentTarget | AgentRunnerTarget
 
 def registered_agent_source(target: Target | None) -> RegisteredAgentSource | None:
     """The registered agent a Fabric or Harbor target runs, if it runs one."""
-    if isinstance(target, FabricRunnerTarget) and isinstance(target.source, RegisteredAgentSource):
+    if isinstance(target, (FabricRunnerTarget, HarborRunnerTarget)) and isinstance(
+        target.source, RegisteredAgentSource
+    ):
         return target.source
-    if isinstance(target, HarborRunnerTarget):
-        return target.registered_agent
     return None
 
 
@@ -474,7 +541,7 @@ def target_agent_identity(target: Target | Model | AgentBase | None) -> tuple[st
     if isinstance(target, AgentTarget):
         return target.agent.name, None
     if isinstance(target, HarborRunnerTarget):
-        if target.registered_agent is not None:
+        if isinstance(target.source, RegisteredAgentSource):
             return registered_agent_name(target), None
         return target.agent_import_path or target.agent_name, target.agent_model_name
     if isinstance(target, GymRunnerTarget):
@@ -674,22 +741,17 @@ class AgentEvalInputSpec(_AgentEvalSpecCommon):
 
     @model_validator(mode="after")
     def _reject_resolved_config_on_submit(self) -> Self:
-        if isinstance(self.target, FabricRunnerTarget) and self.target.resolved_config is not None:
-            raise ValueError("`resolved_config` is set by registered-agent resolution, not the submitter")
-        return self
-
-    @model_validator(mode="after")
-    def _registered_agent_owns_the_harbor_agent(self) -> Self:
         target = self.target
-        if not isinstance(target, HarborRunnerTarget) or target.registered_agent is None:
-            return self
-        if target.agent_import_path is not None or target.agent_model_name is not None:
+        if isinstance(target, FabricRunnerTarget) and target.resolved_config is not None:
+            raise ValueError("`resolved_config` is set by registered-agent resolution, not the submitter")
+        if (
+            isinstance(target, HarborRunnerTarget)
+            and isinstance(target.source, RegisteredAgentSource)
+            and "fabric_config" in target.agent_kwargs
+        ):
             raise ValueError(
-                "`agent_import_path` and `agent_model_name` cannot be combined with `registered_agent`: the "
-                "registered agent selects the Harbor agent, and its model is part of what it is"
+                "`agent_kwargs.fabric_config` is derived from the registered `agent`; pass one or the other"
             )
-        if "fabric_config" in target.agent_kwargs:
-            raise ValueError("`agent_kwargs.fabric_config` is derived from `registered_agent`; pass one or the other")
         return self
 
 

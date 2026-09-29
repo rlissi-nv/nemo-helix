@@ -11,7 +11,13 @@ from unittest.mock import Mock
 import pytest
 from nemo_evaluator.api.fields import TasksetRef
 from nemo_evaluator.filesets import FilesetRef
-from nemo_evaluator.jobs.agent_spec import AgentEvalInputSpec, GymPlacement, GymRunnerTarget, HarborRunnerTarget
+from nemo_evaluator.jobs.agent_spec import (
+    AgentEvalInputSpec,
+    GymPlacement,
+    GymRunnerTarget,
+    HarborBuiltinAgentSource,
+    HarborRunnerTarget,
+)
 from nemo_evaluator.jobs.runner_targets import UnsubmittableRunnerError, runner_to_target
 from nemo_evaluator.sdk.resources import Evaluator
 from nemo_evaluator_sdk.agent_eval.runtimes.gym import GymAgentTaskRunner, GymRuntimeConfig
@@ -24,10 +30,13 @@ from pydantic import ValidationError
 #: discriminates the target union, and the other two come from the ``GymPlacement``.
 WIRE_ONLY_TARGET_FIELDS = {"kind", "environment", "agent_ref_name"}
 
-HARBOR_CARRIED_VALUES = {
+#: The runtime's three agent-selection fields become the target's one ``source``.
+HARBOR_AGENT_VALUES = {
     "agent_name": "codex",
     "agent_import_path": "custom_agent:Agent",
     "agent_model_name": "model",
+}
+HARBOR_CARRIED_VALUES = {
     "agent_kwargs": {"temperature": 0.2},
     "n_attempts": 2,
     "n_concurrent_trials": 3,
@@ -38,9 +47,6 @@ HARBOR_CARRIED_VALUES = {
     "agent_setup_timeout_multiplier": 12.0,
     "agent_timeout_multiplier": 5.0,
 }
-#: Harbor target fields with no runtime-config counterpart: a registered agent is a submission-time
-#: source the service resolves into the fields above, so a live runner never carries one.
-HARBOR_WIRE_ONLY_VALUES = {"registered_agent": None}
 HARBOR_REJECTED_VALUES = {
     "job_name": "existing-job",
     "force_rerun": True,
@@ -54,7 +60,7 @@ HARBOR_REJECTED_VALUES = {
 
 
 def test_harbor_configuration_survives_submission_without_local_storage(tmp_path, monkeypatch):
-    config = HarborRuntimeConfig(jobs_dir=tmp_path / "jobs", **HARBOR_CARRIED_VALUES)
+    config = HarborRuntimeConfig(jobs_dir=tmp_path / "jobs", **HARBOR_AGENT_VALUES, **HARBOR_CARRIED_VALUES)
     runner = HarborAgentTaskRunner(config=config)
     # Conversion must not inspect the caller's filesystem or start Harbor.
     with monkeypatch.context() as scoped:
@@ -65,14 +71,23 @@ def test_harbor_configuration_survives_submission_without_local_storage(tmp_path
     assert target.model_dump(mode="json") == {
         "kind": "harbor",
         "env_secrets": {},
-        **HARBOR_WIRE_ONLY_VALUES,
+        "source": {"import_path": "custom_agent:Agent", "model_name": "model"},  # the import path wins
         **HARBOR_CARRIED_VALUES,
     }
 
 
+def test_a_harbor_runner_without_an_import_path_submits_its_built_in_agent(tmp_path):
+    runner = HarborAgentTaskRunner(
+        config=HarborRuntimeConfig(jobs_dir=tmp_path, agent_name="codex", agent_model_name="m")
+    )
+    assert runner_to_target(runner).source == HarborBuiltinAgentSource(name="codex", model_name="m")
+    with pytest.raises(UnsubmittableRunnerError, match="selects no agent"):
+        runner_to_target(HarborAgentTaskRunner(config=HarborRuntimeConfig(jobs_dir=tmp_path, agent_name=None)))
+
+
 def test_every_harbor_runtime_field_has_a_submission_policy():
     assert set(HarborRuntimeConfig.model_fields) == (
-        set(HARBOR_CARRIED_VALUES) | set(HARBOR_REJECTED_VALUES) | {"jobs_dir"}
+        set(HARBOR_AGENT_VALUES) | set(HARBOR_CARRIED_VALUES) | set(HARBOR_REJECTED_VALUES) | {"jobs_dir"}
     )
 
 

@@ -238,7 +238,7 @@ the job's environment at compile time, which the job then forwards exactly as ab
 {
   "target": {
     "kind": "harbor",
-    "agent_import_path": "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_agent:NemoFabricAgent",
+    "source": {"import_path": "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_agent:NemoFabricAgent"},
     "agent_kwargs": {
       "fabric_config": {"metadata": {"name": "hello-world-deepagents"}, "harness": {"...": "..."}, "models": {"...": "..."}},
       "fabric_package": "nemo-fabric[deepagents]==0.3.0",
@@ -278,14 +278,14 @@ trajectory-aware metrics.
 
 ## Run a registered agent
 
-An agent registered on the platform with `nemo agents create` can be the Harbor target's
-`registered_agent`, in place of `agent_name` or `agent_import_path`:
+An agent registered on the platform with `nemo agents create` can be the Harbor target's `source`,
+in place of a built-in `name` or your own `import_path`:
 
 ```json
 {
   "target": {
     "kind": "harbor",
-    "registered_agent": {"agent": "calculator-agent"},
+    "source": {"agent": "calculator-agent"},
     "n_attempts": 2,
     "agent_setup_timeout_multiplier": 12.0,
     "agent_kwargs": {"fabric_workspace": "/app"}
@@ -295,7 +295,7 @@ An agent registered on the platform with `nemo agents create` can be the Harbor 
 
 At submit time the service resolves the agent exactly as `nemo agents deploy` would — its models bound
 to the workspace's Inference Gateway, the optional `environment` merged on top — and fills the target
-in: `agent_import_path` becomes `FabricInstalledAgent` (so any task image works) and
+in: the agent runs as the SDK's `FabricInstalledAgent` (so any task image works) and
 `agent_kwargs.fabric_config` carries the whole translated config, with `fabric_package` derived from
 the harness and pinned to the platform's Fabric version unless you set it. For the deepagents harness
 the pin also covers `mcp` and `langchain-mcp-adapters` at the platform's versions, because a clean
@@ -304,17 +304,17 @@ line, so your own pin can do the same; quote a requirement that contains spaces,
 environment marker. Installing the agent into
 each task container takes minutes the first time, so raise `agent_setup_timeout_multiplier` as the
 example does — Harbor's default is tuned for prebuilt agents. The persisted job spec
-shows the filled-in target next to the qualified `registered_agent`; the job never looks the agent up.
+shows the filled-in target with `source.agent` qualified; the job never looks the agent up.
 If the agent's config refers to skills or prompts by relative path, its Ethos FileSet is staged into the
 job and uploaded into every task container as the Fabric config bundle.
 
-`registered_agent.environment` takes the same spec a deployment does — redirect the agent's declared MCP servers to
+`source.environment` takes the same spec a deployment does — redirect the agent's declared MCP servers to
 mocks, add process env, bind secrets by reference — with one Harbor-specific caveat: fulfilment URLs
 must be reachable from *inside* the task container, so `localhost` on the host is not. The same is
 true of the Inference Gateway itself on a laptop, where the platform binds to `localhost`: point
 `environment.model_provider_override.base_url` at the gateway through `host.docker.internal` for a
-local run. `agent_import_path` and `agent_model_name` cannot be combined with `registered_agent` — the
-registered agent selects the Harbor agent, and a different model is a different registered agent.
+local run. A registered agent carries no `model_name`: its model is part of what it is, and a different model
+is a different registered agent.
 
 One limitation inside the task container: a secret bound to a **stdio** MCP server through
 `mcp.<name>.secrets` reaches the agent's environment but not the server itself. On the host Fabric

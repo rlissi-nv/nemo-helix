@@ -168,12 +168,11 @@ an existing deployment is never called.
 from nemo_evaluator.jobs.agent_spec import RegisteredAgentSource, FabricRunnerTarget, HarborRunnerTarget
 
 on_host = FabricRunnerTarget(source=RegisteredAgentSource(agent="calculator-agent"))  # or "workspace/name"
-in_task_containers = HarborRunnerTarget(registered_agent=RegisteredAgentSource(agent="calculator-agent"))
+in_task_containers = HarborRunnerTarget(source=RegisteredAgentSource(agent="calculator-agent"))
 ```
 
-On Harbor the resolved agent lands in `agent_import_path` (the SDK's installed
-Fabric agent) and `agent_kwargs.fabric_config`; `agent_import_path` and
-`agent_model_name` cannot be supplied alongside `registered_agent`.
+On Harbor the resolved agent runs as the SDK's installed Fabric agent with its
+config in `agent_kwargs.fabric_config`; a registered source has no `model_name`.
 
 There is no model override — a different model is a different registered
 agent. To reshape the run, pass `environment=` (an `EnvironmentSpecInline`, the
@@ -406,10 +405,10 @@ result = await AgentEvaluator().run(tasks=tasks, target=runner)
 **Platform SDK:**
 
 ```python
-from nemo_evaluator.jobs.agent_spec import HarborRunnerTarget
+from nemo_evaluator.jobs.agent_spec import HarborBuiltinAgentSource, HarborRunnerTarget
 
 target = HarborRunnerTarget(
-    agent_name="oracle",
+    source=HarborBuiltinAgentSource(name="oracle"),
     n_attempts=1,
     n_concurrent_trials=2,
     max_retries=0,
@@ -431,8 +430,10 @@ target = HarborRunnerTarget(
   emitted. Missing or Boolean values are omitted with a diagnostic; usable siblings are kept.
 - A secondary reward discovered for one task does not apply to another task.
 
-Use `agent_import_path` for a custom Harbor agent and `agent_model_name` when
-the agent requires a model. Pass the agent's constructor arguments as
+`source` names exactly one agent: `HarborBuiltinAgentSource(name=...)`,
+`HarborImportedAgentSource(import_path=...)` for a custom Harbor agent, or a
+`RegisteredAgentSource`; the first two take `model_name` when the agent
+requires a model. Pass the agent's constructor arguments as
 `agent_kwargs` (a JSON mapping, Harbor's `--ak key=value`). Do not put secrets
 in `agent_kwargs`: Harbor persists them unredacted across the job directory and
 needs the real value to run. Credential-shaped plaintext is rejected at submit

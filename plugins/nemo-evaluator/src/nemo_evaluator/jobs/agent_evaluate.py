@@ -161,11 +161,6 @@ def _profile_dependency_unavailable(profile: str) -> HelixJobDependencyUnavailab
 #: The only registered-agent config format a runner exists for; ``nat-workflow-v1`` describes a NAT workflow.
 _FABRIC_AGENT_CONFIG_FORMAT = "nemo-agents-spec-v1"
 
-#: The SDK's installed Fabric agent: it brings its own Python, so any task image works.
-REGISTERED_AGENT_HARBOR_IMPORT_PATH = (
-    "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_installed_agent:FabricInstalledAgent"
-)
-
 #: Fabric distribution extra that installs each harness adapter into the task container.
 _FABRIC_ADAPTER_EXTRAS: dict[str, str] = {
     "nvidia.fabric.langchain.deepagents": "deepagents",
@@ -363,8 +358,8 @@ async def _resolve_registered_agent(
     """Fill a Fabric or Harbor runner target that names a registered agent with what that agent is.
 
     The source keeps its ``agent``, workspace-qualified. A Fabric target gets the config it resolved to as
-    ``resolved_config``; a Harbor target gets the installed Fabric agent selected and the config in its
-    kwargs. Either way the job runs the agent fresh per trial without ever looking it up itself.
+    ``resolved_config``; a Harbor target gets it in its kwargs, for the installed Fabric agent its source
+    implies. Either way the job runs the agent fresh per trial without ever looking it up itself.
     """
     if not isinstance(target, (FabricRunnerTarget, HarborRunnerTarget)):
         return target
@@ -392,13 +387,7 @@ async def _resolve_registered_agent(
         "fabric_package": fabric_package if isinstance(fabric_package, str) else _default_fabric_package(adapter_id),
     }
     return target.model_copy(
-        update={
-            "registered_agent": resolved_source,
-            "agent_name": None,
-            "agent_import_path": REGISTERED_AGENT_HARBOR_IMPORT_PATH,
-            "agent_kwargs": agent_kwargs,
-            "env_secrets": env_secrets,
-        }
+        update={"source": resolved_source, "agent_kwargs": agent_kwargs, "env_secrets": env_secrets}
     )
 
 

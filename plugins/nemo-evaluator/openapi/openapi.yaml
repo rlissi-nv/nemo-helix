@@ -4429,6 +4429,39 @@ components:
       - fileset_ref
       - files_hash
       title: HarborArchiveSource
+    HarborBuiltinAgentSource:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Built-in Harbor agent to run, e.g. `oracle`.
+        model_name:
+          title: Model Name
+          description: Optional model slug passed to the agent.
+          type: string
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: HarborBuiltinAgentSource
+      description: One of Harbor's built-in agents, selected by name.
+    HarborImportedAgentSource:
+      properties:
+        import_path:
+          type: string
+          title: Import Path
+          description: Harbor agent import path, e.g. `harbor_wrapper:WrappedAgent`.
+            The module must already be importable in the run environment.
+        model_name:
+          title: Model Name
+          description: Optional model slug passed to the agent.
+          type: string
+      additionalProperties: false
+      type: object
+      required:
+      - import_path
+      title: HarborImportedAgentSource
+      description: A Harbor agent class the run environment can already import.
     HarborRunnerTarget:
       properties:
         kind:
@@ -4436,30 +4469,19 @@ components:
           const: harbor
           title: Kind
           default: harbor
-        registered_agent:
-          allOf:
+        source:
+          anyOf:
+          - $ref: '#/components/schemas/HarborBuiltinAgentSource'
+          - $ref: '#/components/schemas/HarborImportedAgentSource'
           - $ref: '#/components/schemas/FabricRegisteredAgentSource'
-          description: "A registered platform agent to run inside each task container,\
-            \ in place of `agent_name` / `agent_import_path`. Resolved at submit into\
-            \ `agent_import_path` (the SDK's installed Fabric agent) and `agent_kwargs.fabric_config`,\
-            \ so the agent runs as registered \u2014 identity, skills, MCP servers,\
-            \ and telemetry included \u2014 and kept, qualified, as the run's provenance."
-        agent_name:
-          title: Agent Name
-          description: Built-in Harbor agent to run (e.g. 'oracle'). Ignored when
-            `agent_import_path` or `registered_agent` is set.
-          default: oracle
-          type: string
-        agent_import_path:
-          title: Agent Import Path
-          description: Custom Harbor agent import path (e.g. 'harbor_wrapper:WrappedAgent');
-            overrides `agent_name`. The module must already be importable in the run
-            environment.
-          type: string
-        agent_model_name:
-          title: Agent Model Name
-          description: Optional model slug passed to the Harbor agent.
-          type: string
+          title: Source
+          description: "The agent Harbor runs in each task container: a built-in agent\
+            \ by `name`, your own by `import_path`, or a registered platform `agent`\
+            \ (with an optional `environment`). A registered agent is resolved at\
+            \ submit into the SDK's installed Fabric agent with the agent's translated\
+            \ config in `agent_kwargs.fabric_config`, so it runs as registered \u2014\
+            \ identity, skills, MCP servers, and telemetry included \u2014 and stays,\
+            \ qualified, as the run's provenance."
         agent_kwargs:
           additionalProperties:
             $ref: '#/components/schemas/JsonValue'

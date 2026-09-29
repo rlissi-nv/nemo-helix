@@ -22,6 +22,7 @@ from nemo_evaluator.jobs.agent_spec import (
     FabricConfigSource,
     FabricRunnerTarget,
     GymRunnerTarget,
+    HarborImportedAgentSource,
     HarborRunnerTarget,
     ModelTarget,
     RegisteredAgentSource,
@@ -104,8 +105,11 @@ def _agent() -> Agent:
             GymRunnerTarget(agent="simple_agent", agent_config="conf/agent.yaml", resources_server="mcqa"),
             ("gym", "simple_agent", None),
         ),
-        (HarborRunnerTarget(agent_name="oracle"), ("harbor", "oracle", None)),
-        (HarborRunnerTarget(agent_import_path="wrapper:Agent"), ("harbor", "wrapper:Agent", None)),
+        (HarborRunnerTarget(), ("harbor", "oracle", None)),
+        (
+            HarborRunnerTarget(source=HarborImportedAgentSource(import_path="wrapper:Agent")),
+            ("harbor", "wrapper:Agent", None),
+        ),
         (None, (None, None, None)),
     ],
 )
