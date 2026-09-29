@@ -9,14 +9,19 @@ NEMO_RL_REF are left alone; a checkout outside this image still builds from git.
 
 The lock records each wheel filename and its sha256. It does not store a glob,
 so /mnt/wheels has to be mounted again for every later `uv sync` of this lock.
+
+Versions and git revisions come from docker/rl/cuda-wheel-versions.toml.
+sync-cuda-wheel-versions.py rewrites the versions from a built wheel image.
 """
 
 from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 WHEELS = Path(os.environ.get("RL_CUDA_WHEELS", "/mnt/wheels"))
@@ -34,12 +39,18 @@ PACKAGES = (
     ("transformer-engine-torch", ("transformer-engine-torch",), ("transformer_engine_torch-",)),
 )
 
-DEEP_EP_GIT = "deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@17cfb817bccec3a9c247013360cc550c2bac441e"
-DEEP_GEMM_GIT = "deep_gemm @ git+https://github.com/deepseek-ai/DeepGEMM.git@67fc64863d43521080bf2005e6528d0fceee9510"
-FAST_HADAMARD_GIT = (
-    "fast-hadamard-transform @ git+https://github.com/Dao-AILab/fast-hadamard-transform.git"
-    "@f134af63deb2df17e1171a9ec1ea4a7d8604d5ca"
-)
+
+def deep_ep_git(rev: str) -> str:
+    return f"deep_ep @ git+https://github.com/deepseek-ai/DeepEP.git@{rev}"
+
+
+def deep_gemm_git(rev: str) -> str:
+    return f"deep_gemm @ git+https://github.com/deepseek-ai/DeepGEMM.git@{rev}"
+
+
+def fast_hadamard_git(rev: str) -> str:
+    return f"fast-hadamard-transform @ git+https://github.com/Dao-AILab/fast-hadamard-transform.git@{rev}"
+
 
 NO_BUILD_OLD = """no-build-isolation-package = [
   "transformer-engine-torch",
@@ -104,6 +115,30 @@ GONE_PINS = (
 )
 
 
+def retarget_metadata(text: str, metadata_name: str, version: str) -> str:
+    """Point NeMo-RL's static requires-dist at the wheel version.
+
+    The wheel's own metadata is the published one. mamba-ssm 2.3.2.post1
+    requires tilelang==0.1.8, which conflicts with NeMo-RL's tilelang>=0.1.9.
+    The static block is what the git pin used to avoid that, but it was keyed
+    to the older version string, so uv ignored it.
+    """
+    pattern = re.compile(
+        rf'(\[\[tool\.uv\.dependency-metadata\]\]\nname = "{re.escape(metadata_name)}"\n(?:#[^\n]*\n)*)version = "[^"]+"'
+    )
+    if pattern.search(text) is None:
+        return text
+    return pattern.sub(rf'\g<1>version = "{version}"', text, count=1)
+
+
+def replace_exact_pin(text: str, name: str, version: str, count: int) -> str:
+    pattern = re.compile(rf'"{re.escape(name)}==[^"]+"')
+    found = pattern.findall(text)
+    if len(found) != count:
+        raise SystemExit(f"expected {count} {name}== pin(s), found {len(found)}: {found}")
+    return pattern.sub(f'"{name}=={version}"', text)
+
+
 def must_replace(text: str, old: str, new: str, count: int | None = 1) -> str:
     found = text.count(old)
     if count is None:
@@ -114,7 +149,31 @@ def must_replace(text: str, old: str, new: str, count: int | None = 1) -> str:
     return text.replace(old, new)
 
 
-def rewrite_pyproject(text: str, machine: str) -> str:
+def versions_path() -> Path:
+    override = os.environ.get("RL_CUDA_WHEEL_VERSIONS")
+    if override:
+        return Path(override)
+    beside = Path(__file__).with_name("cuda-wheel-versions.toml")
+    if beside.is_file():
+        return beside
+    return Path(__file__).resolve().parent.parent / "cuda-wheel-versions.toml"
+
+
+def load_expected() -> dict[str, dict[str, str]]:
+    path = versions_path()
+    packages = tomllib.loads(path.read_text())["package"]
+    expected = {item["name"]: item for item in packages}
+    missing = [name for name, _lock_names, _prefixes in PACKAGES if name not in expected]
+    if missing:
+        raise SystemExit(f"{path} is missing packages: {', '.join(missing)}")
+    for name, _lock_names, prefixes in PACKAGES:
+        recorded = expected[name]["wheel_prefix"]
+        if prefixes != (recorded,):
+            raise SystemExit(f"{name} wheel_prefix {recorded} does not match {prefixes}")
+    return expected
+
+
+def rewrite_pyproject(text: str, machine: str, expected: dict[str, dict[str, str]]) -> str:
     if machine not in ("x86_64", "aarch64"):
         raise SystemExit(f"refusing to lock for platform_machine={machine!r}")
 
@@ -129,46 +188,77 @@ find-links = ["/mnt/wheels"]"""
     text = must_replace(text, FLASH_ATTN_JOBS_OLD, "")
 
     # Bare names would resolve to whatever PyPI currently ships. Pin the
-    # revisions this wheel image built. Git sources only attach to direct deps,
+    # versions stamped into the wheels. Git sources only attach to direct deps,
     # which is why mcore lists these next to megatron-bridge[ssm].
-    # Versions are the ones stamped into the built wheels. NeMo-RL's
-    # dependency-metadata still names the older git revisions.
-    text = must_replace(text, '  "mamba-ssm",', '  "mamba-ssm==2.3.2.post1",', 2)
-    text = must_replace(text, '  "causal-conv1d",', '  "causal-conv1d==1.6.2.post1",', 2)
-    text = must_replace(text, '  "nv-grouped-gemm",', '  "nv-grouped-gemm==1.1.4.post7",', 1)
+    text = must_replace(text, '  "mamba-ssm",', f'  "mamba-ssm=={expected["mamba-ssm"]["version"]}",', 2)
+    text = must_replace(text, '  "causal-conv1d",', f'  "causal-conv1d=={expected["causal-conv1d"]["version"]}",', 2)
+    text = must_replace(
+        text, '  "nv-grouped-gemm",', f'  "nv-grouped-gemm=={expected["nv-grouped-gemm"]["version"]}",', 1
+    )
+    flash_mla = expected["flash_mla"]["version"]
     text = must_replace(
         text,
         "  \"flash_mla ; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')\",",
-        "  \"flash_mla==1.0.0+b7643bd ; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')\",",
+        f"  \"flash_mla=={flash_mla} ; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')\",",
         1,
     )
 
-    text = must_replace(text, DEEP_EP_GIT, "deep_ep==1.2.1+17cfb81", 4)
-    text = must_replace(text, DEEP_GEMM_GIT, "deep_gemm==2.5.0+67fc648", 1)
-    text = must_replace(text, FAST_HADAMARD_GIT, "fast-hadamard-transform==1.0.4.post1", 1)
+    text = must_replace(text, deep_ep_git(expected["deep_ep"]["rev"]), f"deep_ep=={expected['deep_ep']['version']}", 4)
+    text = must_replace(
+        text,
+        deep_gemm_git(expected["deep_gemm"]["rev"]),
+        f"deep_gemm=={expected['deep_gemm']['version']}",
+        1,
+    )
+    text = must_replace(
+        text,
+        fast_hadamard_git(expected["fast-hadamard-transform"]["rev"]),
+        f"fast-hadamard-transform=={expected['fast-hadamard-transform']['version']}",
+        1,
+    )
+    text = replace_exact_pin(text, "flash-attn", expected["flash-attn"]["version"], 2)
+    text = replace_exact_pin(
+        text,
+        "transformer-engine[pytorch,core_cu13]",
+        expected["transformer-engine-torch"]["version"],
+        1,
+    )
 
     text = must_replace(
         text,
-        'causal-conv1d = { git = "https://github.com/Dao-AILab/causal-conv1d", rev = "4f6ae4e26ae5fe8af9372f8d312ab25cc4595223" }\n',
+        'causal-conv1d = { git = "https://github.com/Dao-AILab/causal-conv1d", rev = "'
+        + expected["causal-conv1d"]["rev"]
+        + '" }\n',
         "",
     )
     text = must_replace(
         text,
-        'mamba-ssm = { git = "https://github.com/state-spaces/mamba.git", rev = "a14b1dff0454a3bc27d9eb31355dc01e4b2490ec" }\n',
+        'mamba-ssm = { git = "https://github.com/state-spaces/mamba.git", rev = "'
+        + expected["mamba-ssm"]["rev"]
+        + '" }\n',
         "",
     )
     text = must_replace(
         text,
-        'nv-grouped-gemm = { git = "https://github.com/fanshiqing/grouped_gemm", tag = "v1.1.4.post7" }\n',
+        'nv-grouped-gemm = { git = "https://github.com/fanshiqing/grouped_gemm", tag = "'
+        + expected["nv-grouped-gemm"]["rev"]
+        + '" }\n',
         "",
     )
     text = must_replace(
         text,
         "# FlashMLA derives its version from the Git revision in setup.py. Keep this pin\n"
         "# synchronized with the static dependency metadata below.\n"
-        'flash_mla = { git = "https://github.com/deepseek-ai/FlashMLA", rev = "b7643bd54521f563b839b98289b5cd048c062ba2" }\n',
+        'flash_mla = { git = "https://github.com/deepseek-ai/FlashMLA", rev = "'
+        + expected["flash_mla"]["rev"]
+        + '" }\n',
         "",
     )
+
+    for name, record in expected.items():
+        metadata_name = record.get("metadata_name")
+        if metadata_name:
+            text = retarget_metadata(text, metadata_name, record["version"])
 
     for pin in GONE_PINS:
         if pin in text:
@@ -248,7 +338,7 @@ def main() -> None:
     pyproject_path = root / "pyproject.toml"
     text = pyproject_path.read_text()
     machine = platform.machine()
-    text = rewrite_pyproject(text, machine)
+    text = rewrite_pyproject(text, machine, load_expected())
     pyproject_path.write_text(text)
 
     if os.environ.get("PIN_CUDA_WHEELS_REWRITE_ONLY"):

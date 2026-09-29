@@ -207,11 +207,7 @@ ENV NVTE_BUILD_MAX_JOBS=${NVTE_BUILD_MAX_JOBS} \
 # which reads every path source, and tensorrt-llm's prepare_metadata_for_build_wheel returns
 # static metadata without compiling. .git directories are still excluded.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} pyproject.toml uv.lock ./
-# setuptools reads the dynamic version by importing nemo_rl. __init__.py imports
-# transformers_compat at module level, and that module is stdlib-only until the
-# patch actually runs, so it has to be present for uv lock/sync metadata.
-COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} \
-    nemo_rl/__init__.py nemo_rl/package_info.py nemo_rl/transformers_compat.py ./nemo_rl/
+COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} nemo_rl/__init__.py nemo_rl/package_info.py nemo_rl/transformers_compat.py ./nemo_rl/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git 3rdparty/ ./3rdparty/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} research/ ./research/
 
@@ -243,6 +239,7 @@ ARG UV_SYNC_MODE=--frozen
 # Then drop ray's vendored aiohttp and jars, and PyNvVideoCodec's bundled FFmpeg, before prefetch
 # can symlink a venv at them. The package stays cached, so uv does not re-download it.
 RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
+    --mount=type=bind,source=docker/rl/cuda-wheel-versions.toml,target=/tmp/cuda-wheel-versions.toml,readonly \
     --mount=type=bind,source=docker/rl/scripts/pin-cuda-wheels.py,target=/tmp/pin-cuda-wheels.py,readonly \
     <<"EOF" bash -exu
 umask 022
