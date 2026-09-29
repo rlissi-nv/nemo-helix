@@ -4473,7 +4473,7 @@ components:
           anyOf:
           - $ref: '#/components/schemas/HarborBuiltinAgentSource'
           - $ref: '#/components/schemas/HarborImportedAgentSource'
-          - $ref: '#/components/schemas/FabricRegisteredAgentSource'
+          - $ref: '#/components/schemas/RegisteredAgentSource'
           title: Source
           description: "The agent Harbor runs in each task container: a built-in agent\
             \ by `name`, your own by `import_path`, or a registered platform `agent`\
