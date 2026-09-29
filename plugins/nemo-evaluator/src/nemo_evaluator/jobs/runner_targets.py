@@ -121,8 +121,6 @@ def _harbor_target(runner: HarborAgentTaskRunner) -> HarborRunnerTarget:
         "artifacts",
         "trace_dir",
         "reward_key",
-        # The agent-phase and agent-setup budgets travel: a self-installing agent (a Fabric harness, a
-        # registered agent) needs them job-side just as it does locally.
         "agent_setup_timeout_multiplier",
         "agent_timeout_multiplier",
     )

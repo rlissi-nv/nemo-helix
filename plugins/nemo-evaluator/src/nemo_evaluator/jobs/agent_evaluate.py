@@ -159,8 +159,7 @@ def _profile_dependency_unavailable(profile: str) -> HelixJobDependencyUnavailab
 #: The only registered-agent config format a runner exists for; ``nat-workflow-v1`` describes a NAT workflow.
 _FABRIC_AGENT_CONFIG_FORMAT = "nemo-agents-spec-v1"
 
-#: The Harbor agent a registered agent runs through: the SDK's installed Fabric agent, which brings its
-#: own Python and so runs on any task image, handed the whole config through ``fabric_config``.
+#: The SDK's installed Fabric agent: it brings its own Python, so any task image works.
 REGISTERED_AGENT_HARBOR_IMPORT_PATH = (
     "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_installed_agent:FabricInstalledAgent"
 )
@@ -170,7 +169,7 @@ _FABRIC_ADAPTER_EXTRAS: dict[str, str] = {
     "nvidia.fabric.langchain.deepagents": "deepagents",
     "nvidia.fabric.codex": "codex",
     "nvidia.fabric.claude": "claude",
-    "nvidia.fabric.hermes": "hermes",
+    "nvidia.fabric.hermes": "hermes-agent",
 }
 
 
