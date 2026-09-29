@@ -516,19 +516,22 @@ RUN build-rl-cuda-ext-wheel.sh git https://github.com/Dao-AILab/fast-hadamard-tr
 
 # flash-mla 1.0.0+b7643bd. setup.py stamps the version from `git rev-parse`,
 # so the checkout is the full commit, not a shallow clone that hides it.
+# CUTLASS lives in csrc/cutlass.
 FROM rl-cuda-ext-base AS rl-cuda-ext-flash-mla
-RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/FlashMLA "$FLASH_MLA_REV"
+RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/FlashMLA "$FLASH_MLA_REV" --submodules
 
 # deep-ep 1.2.1+17cfb81. libibverbs-dev is in the base. nvshmem is a build input.
+# NCCL is a submodule under third-party/nccl.
 FROM rl-cuda-ext-base AS rl-cuda-ext-deep-ep
 RUN uv pip install --python /opt/venv/bin/python \
-    --extra-index-url https://pypi.org/simple \
-    "nvidia-nvshmem-cu13==3.7.2" && \
-    build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepEP.git "$DEEP_EP_REV"
+        --extra-index-url https://pypi.org/simple \
+        "nvidia-nvshmem-cu13==3.7.2" && \
+    build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepEP.git "$DEEP_EP_REV" --submodules
 
 # deep-gemm 2.5.0. CUDA 13 moved the CCCL headers; CPLUS_INCLUDE_PATH is set on the base.
+# CUTLASS and fmt are submodules under third-party/.
 FROM rl-cuda-ext-base AS rl-cuda-ext-deep-gemm
-RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepGEMM.git "$DEEP_GEMM_REV"
+RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepGEMM.git "$DEEP_GEMM_REV" --submodules
 
 # flash-attn 2.8.1 from the PyPI sdist. 4 jobs matches the RL pyproject cap.
 FROM rl-cuda-ext-base AS rl-cuda-ext-flash-attn
