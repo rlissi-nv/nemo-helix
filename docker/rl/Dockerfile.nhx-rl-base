@@ -8,8 +8,8 @@
 # from source (rather than the prebuilt NGC nemo-rl image) lets us pin any RL commit via
 # NEMO_RL_REF; Gym follows as RL's submodule pin.
 #
-# DPO trains on `fsdp`. GRPO trains on `automodel` (DTensor V2) or `mcore`
-# (Megatron) and generates on `vllm`. sglang and trtllm are deliberately not built.
+# DPO and GRPO train on `automodel` (DTensor V2) or `mcore` (Megatron). GRPO generates on
+# `vllm`. sglang and trtllm are deliberately not built. The old `fsdp` extra is gone.
 #
 # Two things drive most of what follows, both covered in README.md:
 #   - Workers do not run in the base venv. The `uv sync --extra` calls only warm the uv cache; the
@@ -145,9 +145,10 @@ RUN --mount=type=bind,source=docker/rl/scripts/build-gym-wheel.sh,target=/build/
     bash /build/build-gym-wheel.sh /build/Gym /opt/gym-wheels
 
 # ---- builder: uv sync RL + Gym with the extras we use ----
-# fsdp (DPO training), automodel (GRPO training on DTensor V2, the only LoRA-capable DTensor
-# backend), mcore (Megatron training + Megatron-native generation), vllm (generation), nemo_gym and
-# modelopt are built. sglang and trtllm are not: vLLM covers generation for every config we compile.
+# automodel (DPO and GRPO training on DTensor V2), mcore (Megatron training + Megatron-native
+# generation), vllm (generation), nemo_gym and modelopt are built. sglang and trtllm are not:
+# vLLM covers generation for every config we compile. flash-attn, mamba-ssm and causal-conv1d
+# come in with automodel and mcore.
 FROM base AS builder
 ARG BUILD_UID=2000
 ARG BUILD_GID=2000
@@ -238,8 +239,7 @@ uv venv --seed
 
 uv sync ${UV_SYNC_MODE} --no-install-project
 
-uv sync ${UV_SYNC_MODE} --extra vllm      --no-install-project   # GRPO generation (vllm 0.20 cu130 + flashinfer + deep_gemm/deep_ep)
-uv sync ${UV_SYNC_MODE} --extra fsdp      --no-install-project   # DPO policy training (flash-attn, mamba-ssm, causal-conv1d)
+uv sync ${UV_SYNC_MODE} --extra vllm      --no-install-project   # GRPO generation (vllm 0.29 cu130 + flashinfer + deep_gemm/deep_ep)
 
 # Transformer Engine invokes Ninja with all detected CPUs by default. On the arm64 BuildKit worker,
 # eight simultaneous ptxas processes exhaust available memory. Limit only the two extras that
@@ -332,54 +332,51 @@ RUN umask 022 && uv pip install --python /opt/nemo_rl_venv/bin/python --no-deps 
 # cache. See README.md, "Prefetching the per-worker venvs".
 #
 # Filters are SUBSTRING matches on actor FQNs, and one venv is built PER ACTOR, so actors sharing
-# an extra still need their own filter. Eight filters -> nine venvs:
-#   dtensor_policy_worker.DTensorPolicyWorker      -> fsdp      (DPO training)
-#   dtensor_policy_worker_v2.DTensorPolicyWorkerV2 -> automodel (GRPO training; the only LoRA-capable
-#       DTensor worker). The V1 filter does not match it - the FQN reads `dtensor_policy_worker_v2.`.
-#   megatron_policy_worker.MegatronPolicyWorker    -> mcore     (GRPO training on Megatron; also
-#       hosts Megatron-native generation, which runs in-process rather than as its own actor).
+# an extra still need their own filter. Six filters -> seven venvs. Extras come from
+# nemo_rl/distributed/actor_environments.py at the pinned NEMO_RL_REF:
+#   dtensor_policy_worker_v2.DTensorPolicyWorkerV2 -> automodel (DPO and GRPO training; the only
+#       DTensor worker)
+#   megatron_policy_worker.MegatronPolicyWorker    -> mcore + nemo_gym (GRPO training on Megatron;
+#       also hosts Megatron-native generation, which runs in-process rather than as its own actor).
 #       Does not match modelopt's `megatron_quant_policy_worker.MegatronQuantPolicyWorker`.
-#   vllm.vllm_worker                               -> vllm      (GRPO generation) - matches both the
-#       sync and async workers, which is wanted: NeMo-Gym forces async rollouts.
+#   vllm.vllm_worker                               -> vllm + nemo_gym (GRPO generation) - matches
+#       both the sync and async workers, which is wanted: NeMo-Gym forces async rollouts.
 #   sync_rollout_actor.SyncRolloutActor            -> vllm      (GRPO rollout driver)
 #   nemo_gym.NemoGym                               -> nemo_gym  (Gym environment actor, mode A)
-#   nemo_gym_actor.SandboxedGymActor               -> nemo_gym  (mode B proxy actor)
-#   broker_actor.SandboxEpisodeBrokerActor         -> nemo_gym  (per-episode sandbox broker)
+#   nemo_gym_actor.SandboxedGymActor               -> nemo_gym  (mode B proxy actor; the episode
+#       broker inherits this environment and has no registry entry of its own)
 # Kept specific on purpose: a bare "vllm" would also match modelopt's vllm_quant_worker.
 #
 # NOT prefetched: sglang, trtllm, modelopt-quant, MegatronValueWorker / DTensorValueWorkerV2 (GRPO
-# is critic-free) and the async-GRPO bookkeeping actors; those build on the node if selected.
+# is critic-free), RolloutReassemblerActor, and the async-GRPO bookkeeping actors; those build on
+# the node if selected.
 RUN <<"EOF" bash -exu
 umask 022
 export UV_LINK_MODE=symlink
 uv run nemo_rl/utils/prefetch_venvs.py \
-    dtensor_policy_worker.DTensorPolicyWorker \
     dtensor_policy_worker_v2.DTensorPolicyWorkerV2 \
     megatron_policy_worker.MegatronPolicyWorker \
     vllm.vllm_worker \
     sync_rollout_actor.SyncRolloutActor \
     nemo_gym.NemoGym \
-    nemo_gym_actor.SandboxedGymActor \
-    broker_actor.SandboxEpisodeBrokerActor
+    nemo_gym_actor.SandboxedGymActor
 
 # Fail loudly if the registry moved an actor out from under a filter above - otherwise the venv
 # would silently be built on the node at first use instead, turning a build error into a slow job.
 # The vLLM-tier actors are listed too: the publish stage privatizes `vllm/` in whatever venvs exist,
 # so a filter that stops producing one would leave that worker sharing ray_executor.py again.
 for actor in \
-    nemo_rl.models.policy.workers.dtensor_policy_worker.DTensorPolicyWorker \
     nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2 \
     nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker \
     nemo_rl.environments.nemo_gym.NemoGym \
     nemo_rl.environments.sandbox.nemo_gym_actor.SandboxedGymActor \
-    nemo_rl.environments.sandbox.broker_actor.SandboxEpisodeBrokerActor \
     nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker \
     nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker \
     nemo_rl.experience.sync_rollout_actor.SyncRolloutActor
 do
     if [ ! -x "/opt/ray_venvs/${actor}/bin/python" ]; then
         echo "ERROR: expected prefetched venv at /opt/ray_venvs/${actor}" >&2
-        echo "       check the filters above against ray_actor_environment_registry.py" >&2
+        echo "       check the filters above against nemo_rl/distributed/actor_environments.py" >&2
         exit 1
     fi
 done
@@ -393,12 +390,13 @@ EOF
 # Nothing is prefetched by default - environments install on the node at first use. Pass a
 # space-separated list of Gym config paths to bake a set in.
 ARG NEMO_GYM_PREFETCH_CONFIGS=""
-# Gym's model servers pin a plain `vllm==0.20.0`, which resolves to the CUDA 12 wheel on PyPI -
+# Gym's model servers pin a plain `vllm==0.25.1`, which resolves to the CUDA 12 wheel on PyPI -
 # it would fail to load CUDA libraries inside this CUDA 13 image. Override it to vLLM's prebuilt
-# cu130 GitHub wheel (the same one RL's policy pins) and keep torch on the matching backend, so
-# Gym's venvs share this image's torch/nvidia stack. Mirrors NeMo-RL's own release stage.
+# cu130 GitHub wheel and keep torch on the matching backend, so Gym's venvs share this image's
+# torch/nvidia stack. Mirrors NeMo-RL's own release stage. RL's own vllm extra is 0.29.0; Gym
+# stays on the version its servers declare.
 ARG NEMO_GYM_CUDA=cu130
-ARG NEMO_GYM_VLLM_VERSION=0.20.0
+ARG NEMO_GYM_VLLM_VERSION=0.25.1
 ARG TARGETARCH
 RUN <<"EOF" bash -exu
 umask 022
@@ -408,7 +406,7 @@ if [ -n "${NEMO_GYM_PREFETCH_CONFIGS:-}" ]; then
     cd /opt/nemo-rl
     case "${TARGETARCH:-amd64}" in arm64) WHEEL_ARCH=aarch64 ;; *) WHEEL_ARCH=x86_64 ;; esac
     GYM_VLLM_OVERRIDE=/opt/nemo-rl/.gym-vllm-override.txt
-    printf 'vllm @ https://github.com/vllm-project/vllm/releases/download/v%s/vllm-%s-cp38-abi3-manylinux_2_35_%s.whl\n' \
+    printf 'vllm @ https://github.com/vllm-project/vllm/releases/download/v%s/vllm-%s-cp38-abi3-manylinux_2_28_%s.whl\n' \
         "${NEMO_GYM_VLLM_VERSION}" "${NEMO_GYM_VLLM_VERSION}" "${WHEEL_ARCH}" > "${GYM_VLLM_OVERRIDE}"
     # This starts a real Ray runtime: Gym's per-environment venvs are only created as a side
     # effect of NemoGym._spinup(), and NemoGym is a Ray actor, so the prefetch script stands up
@@ -618,7 +616,7 @@ done
 # Fail loudly: if the vllm prefetch filters change, this must not become a silent no-op.
 if [ "${privatized}" -eq 0 ]; then
     echo "ERROR: no prefetched venv contains a vllm package." >&2
-    echo "       check the vllm prefetch filters against ray_actor_environment_registry.py" >&2
+    echo "       check the vllm prefetch filters against nemo_rl/distributed/actor_environments.py" >&2
     exit 1
 fi
 echo "privatized vllm/ in ${privatized} venv(s)"
