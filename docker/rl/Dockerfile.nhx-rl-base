@@ -203,9 +203,9 @@ ENV NVTE_BUILD_MAX_JOBS=${NVTE_BUILD_MAX_JOBS} \
 # "Layering for fast CI rebuilds".
 #
 # Megatron-Bridge must stay: it is the mcore extra's entry point, and its nested Megatron-LM
-# submodule supplies megatron-core. TensorRT-LLM stays too. pin-cuda-wheels.py runs `uv lock`,
-# which reads every path source, and tensorrt-llm's prepare_metadata_for_build_wheel returns
-# static metadata without compiling. .git directories are still excluded.
+# submodule supplies megatron-core. TensorRT-LLM stays too: uv reads every path source in the
+# lock, and tensorrt-llm's prepare_metadata_for_build_wheel returns static metadata without
+# compiling. .git directories are still excluded.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} pyproject.toml uv.lock ./
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} nemo_rl/__init__.py nemo_rl/package_info.py nemo_rl/transformers_compat.py ./nemo_rl/
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git 3rdparty/ ./3rdparty/
@@ -217,9 +217,9 @@ USER ${BUILD_UID}:${BUILD_GID}
 # RL's uv.lock. Set to "" to relock if you bump RL to a commit whose lock has drifted.
 ARG UV_SYNC_MODE=--frozen
 
-# Warm the uv CACHE, one extra at a time (they conflict). The nine CUDA extensions install
-# from /mnt/wheels; pin-cuda-wheels.py rewrites this image's pyproject.toml and uv.lock first.
-# The fork's own files are untouched. The populated cache is what the prefetch below installs.
+# Warm the uv CACHE, one extra at a time (they conflict). The populated cache is what the
+# prefetch below installs. RL's own pyproject.toml and uv.lock are used as-is. These nine
+# packages are left out of the sync and installed from rl-cuda-ext-wheel after prefetch.
 #
 # `uv sync` is EXACT, so these do NOT accumulate - each --extra prunes the previous one and the base
 # venv ends up with default deps + groups only. The populated cache is the real product.
@@ -231,33 +231,34 @@ ARG UV_SYNC_MODE=--frozen
 # --no-install-project installs dependencies but not nemo-rl itself; the root package is added
 # editable in a cheap step after the full-source COPY.
 #
-# The rewritten lock names each wheel under /mnt/wheels. UV_LINK_MODE=symlink copies those
-# wheels into /opt/uv_cache during this sync, so the mount is not needed at runtime. The full
-# source COPY below puts the fork's pyproject.toml and uv.lock back; /tmp keeps this copy and
-# the next RUN restores it. The prefetch RUN mounts /mnt/wheels again because the lock paths
-# are absolute.
 # Then drop ray's vendored aiohttp and jars, and PyNvVideoCodec's bundled FFmpeg, before prefetch
 # can symlink a venv at them. The package stays cached, so uv does not re-download it.
-RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
-    --mount=type=bind,source=docker/rl/cuda-wheel-versions.toml,target=/tmp/cuda-wheel-versions.toml,readonly \
-    --mount=type=bind,source=docker/rl/scripts/pin-cuda-wheels.py,target=/tmp/pin-cuda-wheels.py,readonly \
-    <<"EOF" bash -exu
+RUN <<"EOF" bash -exu
 umask 022
 export UV_LINK_MODE=symlink
-python3.13 /tmp/pin-cuda-wheels.py /opt/nemo-rl
-cp /opt/nemo-rl/pyproject.toml /tmp/pinned-pyproject.toml
-cp /opt/nemo-rl/uv.lock /tmp/pinned-uv.lock
+# Same nine packages as the wheel install after prefetch.
+SKIP=(
+    --no-install-package causal-conv1d
+    --no-install-package mamba-ssm
+    --no-install-package nv-grouped-gemm
+    --no-install-package fast-hadamard-transform
+    --no-install-package flash-mla
+    --no-install-package deep-ep
+    --no-install-package deep-gemm
+    --no-install-package flash-attn
+    --no-install-package transformer-engine-torch
+)
 uv venv --seed
 
-uv sync ${UV_SYNC_MODE} --no-install-project
+uv sync ${UV_SYNC_MODE} --no-install-project "${SKIP[@]}"
 
-uv sync ${UV_SYNC_MODE} --extra vllm --no-install-project
+uv sync ${UV_SYNC_MODE} --extra vllm --no-install-project "${SKIP[@]}"
 
-uv sync ${UV_SYNC_MODE} --extra automodel --no-install-project
-uv sync ${UV_SYNC_MODE} --extra mcore --no-install-project
-uv sync ${UV_SYNC_MODE} --extra modelopt --no-install-project
-uv sync ${UV_SYNC_MODE} --extra nemo_gym --no-install-project
-uv sync ${UV_SYNC_MODE} --all-groups --no-install-project
+uv sync ${UV_SYNC_MODE} --extra automodel --no-install-project "${SKIP[@]}"
+uv sync ${UV_SYNC_MODE} --extra mcore --no-install-project "${SKIP[@]}"
+uv sync ${UV_SYNC_MODE} --extra modelopt --no-install-project "${SKIP[@]}"
+uv sync ${UV_SYNC_MODE} --extra nemo_gym --no-install-project "${SKIP[@]}"
+uv sync ${UV_SYNC_MODE} --all-groups --no-install-project "${SKIP[@]}"
 
 find "${UV_CACHE_DIR}" -type d -path "*ray/_private/runtime_env/agent/thirdparty_files/aiohttp*" -exec rm -rf {} + || true
 find "${UV_CACHE_DIR}" -type d -path "*/ray/jars" -exec rm -rf {} + || true
@@ -299,13 +300,6 @@ EOF
 # Excluding here keeps them out of this layer - removing them later would leave them extractable.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git . /opt/nemo-rl
 
-# The COPY above restores the fork's pyproject.toml and uv.lock (git sources). Put the
-# /mnt/wheels lock back before anything syncs again. The prefetch RUN mounts the wheels
-# because that lock records absolute /mnt/wheels paths.
-RUN umask 022 && \
-    cp /tmp/pinned-pyproject.toml /opt/nemo-rl/pyproject.toml && \
-    cp /tmp/pinned-uv.lock /opt/nemo-rl/uv.lock
-
 # Install the workspace ROOT (nemo-rl) editable. --no-install-project above installed every
 # DEPENDENCY and workspace MEMBER (incl. nemo-gym) but skipped the root; this adds it with --no-deps
 # (deps already present). .git is on disk now, so nemo_rl.__version__ picks up its +<sha> suffix.
@@ -336,11 +330,15 @@ RUN umask 022 && uv pip install --python /opt/nemo_rl_venv/bin/python --no-deps 
 # is critic-free), RolloutReassemblerActor, and the async-GRPO bookkeeping actors; those build on
 # the node if selected. The loop fails the build if a filter no longer matches; the vLLM actors
 # are included because the publish stage privatizes vllm/ in whatever venvs exist.
+#
+# UV_NO_SYNC=1 keeps prefetch from building the nine CUDA extensions out of git. Each venv is
+# then synced with the extras that actor needs, those nine left out, and the prebuilt wheels
+# installed over the top. UV_LINK_MODE=symlink copies the wheels into /opt/uv_cache.
 RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
     <<"EOF" bash -exu
 umask 022
 export UV_LINK_MODE=symlink
-uv run nemo_rl/utils/prefetch_venvs.py \
+UV_NO_SYNC=1 uv run nemo_rl/utils/prefetch_venvs.py \
     dtensor_policy_worker_v2.DTensorPolicyWorkerV2 \
     megatron_policy_worker.MegatronPolicyWorker \
     vllm.vllm_worker \
@@ -363,6 +361,32 @@ do
         exit 1
     fi
 done
+
+SKIP=(
+    --no-install-package causal-conv1d
+    --no-install-package mamba-ssm
+    --no-install-package nv-grouped-gemm
+    --no-install-package fast-hadamard-transform
+    --no-install-package flash-mla
+    --no-install-package deep-ep
+    --no-install-package deep-gemm
+    --no-install-package flash-attn
+    --no-install-package transformer-engine-torch
+)
+sync_venv() {
+    local venv="$1"
+    shift
+    env -u UV_NO_SYNC UV_PROJECT_ENVIRONMENT="${venv}" \
+        uv sync ${UV_SYNC_MODE} --inexact --directory /opt/nemo-rl "$@" "${SKIP[@]}"
+    uv pip install --python "${venv}/bin/python" --no-deps /mnt/wheels/*.whl
+}
+sync_venv /opt/ray_venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2 --extra automodel
+sync_venv /opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker --extra mcore --extra nemo_gym
+sync_venv /opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker --extra vllm --extra nemo_gym
+sync_venv /opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker --extra vllm --extra nemo_gym
+sync_venv /opt/ray_venvs/nemo_rl.experience.sync_rollout_actor.SyncRolloutActor --extra vllm
+sync_venv /opt/ray_venvs/nemo_rl.environments.nemo_gym.NemoGym --extra nemo_gym
+sync_venv /opt/ray_venvs/nemo_rl.environments.sandbox.nemo_gym_actor.SandboxedGymActor --extra nemo_gym
 EOF
 
 # ---- Bundled NeMo-Gym environment venvs (GRPO only; OFF by default, opt in below) ----
