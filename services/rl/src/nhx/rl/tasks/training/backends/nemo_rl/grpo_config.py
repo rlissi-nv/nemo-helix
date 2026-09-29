@@ -580,11 +580,6 @@ def compile_grpo_config(
             # whole distribution.
             "top_p": 1.0,
             "top_k": grpo_hp.top_k,
-            # Validation sampling. NeMo-RL's recipes interpolate these from the train
-            # values (${.temperature}, ...), so validation samples exactly like training.
-            # MasterConfig requires the keys; leaving them out fails in the driver after
-            # the Ray cluster is up. Mirroring the train values also keeps the
-            # val-sampling override guard in grpo.setup() from firing.
             "val_temperature": grpo_hp.temperature,
             "val_top_p": 1.0,
             "val_top_k": grpo_hp.top_k,
