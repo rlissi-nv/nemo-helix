@@ -281,6 +281,27 @@ class BuilderConfig(NemoConfig):
             raise ValueError("signing_public_key must be an EC or RSA key, which is what cosign signs with")
         return value
 
+    # --- The failure sweep -----------------------------------------------
+
+    sweep_interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "How often the failure sweep looks at `pending` rows. It only ever fails rows -- a "
+            "row goes `ready` the moment its signature is delivered -- so this bounds how long a "
+            "dead build's rows stay pending, not how long a good one takes."
+        ),
+    )
+    job_creation_grace_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How long a row's job may be missing before the sweep fails the row. Rows are written "
+            "before the job, so for a moment after every submit the job is legitimately not there "
+            "yet; after this, a submit that died between the two has left rows nothing will build."
+        ),
+    )
+
     signature_storage: Literal["tag", "referrers"] = Field(
         default="tag",
         description=(
