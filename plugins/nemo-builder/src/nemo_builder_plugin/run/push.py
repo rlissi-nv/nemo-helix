@@ -314,6 +314,11 @@ def _push_one(
     image: PushImage, layout: Path, *, broker: _Broker, courier: _Courier, docker_config: Path, insecure: bool
 ) -> None:
     digest = validate_layout(layout)
+    if image.expected_digest is not None and digest != image.expected_digest:
+        # A copy is someone else's image, and the only one this step may publish under its name is
+        # the one the submit path resolved. Anything else in the slot -- a pull gone wrong, or a
+        # layout a sandbox wrote there -- is refused before a byte is pushed.
+        raise LayoutRejected(f"layout is {digest}, but this copy must be {image.expected_digest}")
 
     # A fresh token for every image: a registry's token lives minutes, and a set's publish can
     # take longer than that.

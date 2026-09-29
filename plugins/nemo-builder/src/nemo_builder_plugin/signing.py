@@ -43,7 +43,7 @@ def signature_annotations(row: ContainerImage) -> dict[str, str]:
     origin = row.provenance.built_by
     if not isinstance(origin, JobOrigin):
         raise ValueError(f"{row.name} was not produced by a job; this system signs only its own jobs' rows")
-    return {
+    annotations = {
         f"{ANNOTATION_PREFIX}workspace": row.workspace,
         f"{ANNOTATION_PREFIX}image": row.name,
         f"{ANNOTATION_PREFIX}build-set": origin.build_set,
@@ -52,6 +52,13 @@ def signature_annotations(row: ContainerImage) -> dict[str, str]:
         f"{ANNOTATION_PREFIX}request-digest": origin.request_digest,
         f"{ANNOTATION_PREFIX}backend": row.provenance.backend,
     }
+    # What an import was of, and which runtime's layer a derived image carries: the signature says
+    # so, rather than leaving a verifier to trust the row for it.
+    if origin.runtime_layer:
+        annotations[f"{ANNOTATION_PREFIX}runtime-layer"] = origin.runtime_layer
+    if origin.upstream:
+        annotations[f"{ANNOTATION_PREFIX}upstream"] = origin.upstream.image_ref
+    return annotations
 
 
 def key_fingerprint(public_key: ec.EllipticCurvePublicKey | rsa.RSAPublicKey) -> str:

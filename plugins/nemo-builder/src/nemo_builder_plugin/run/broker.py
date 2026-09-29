@@ -252,14 +252,20 @@ class SignedImage:
 
 class ImageSigner(Protocol):
     def sign(
-        self, row: ContainerImage, annotations: Mapping[str, str], *, record: Callable[[str], None]
+        self,
+        row: ContainerImage,
+        annotations: Mapping[str, str],
+        *,
+        record: Callable[[str], None],
+        expected_digest: str | None = None,
     ) -> SignedImage:
-        """Resolve ``row``'s system tag and sign that digest.
+        """Resolve ``row``'s system tag and sign that digest. With ``expected_digest``, refuse any other.
 
         ``record`` is called with the digest once it is resolved and checked, and before anything
         is signed. It is the audit line: if it raises, nothing is signed.
 
-        Raises :class:`SigningFailed` when the registry or cosign fail.
+        Raises :class:`SigningRefused` when the digest is not the expected one, and
+        :class:`SigningFailed` when the registry or cosign fail.
         """
         ...
 
@@ -274,6 +280,10 @@ class AuditUnavailable(Exception):
 
 class SigningFailed(Exception):
     """The registry or cosign failed while resolving or signing. Nothing was signed (502)."""
+
+
+class SigningRefused(Exception):
+    """What the system tag names is not what the row may be signed as. Nothing was signed (403)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,6 +477,14 @@ class Broker:
             return self._deny(identity, "sign", refusal or "no such image", image=image)
 
         annotations = signature_annotations(row)
+        origin = row.provenance.built_by
+        # A copy is someone else's image, and the only one this broker signs under its name is the
+        # one the submit path resolved upstream.
+        expected = (
+            origin.upstream.manifest_digest
+            if isinstance(origin, JobOrigin) and origin.is_copy and origin.upstream
+            else None
+        )
 
         def record(digest: str) -> None:
             # Written BEFORE signing, naming what is about to be signed: a signature outlives
@@ -484,10 +502,12 @@ class Broker:
                 raise AuditUnavailable(str(exc)) from exc
 
         try:
-            signed = self._signer.sign(row, annotations, record=record)
+            signed = self._signer.sign(row, annotations, record=record, expected_digest=expected)
         except AuditUnavailable:
             logger.exception("signature withheld for %s: the audit line could not be written", row.name)
             return _error(HTTPStatus.SERVICE_UNAVAILABLE, "AUDIT_UNAVAILABLE")
+        except SigningRefused as exc:
+            return self._deny(identity, "sign", str(exc), image=image)
         except SigningFailed as exc:
             logger.error("signature failed for %s: %s", row.name, exc)
             self._audit_after({"decision": "sign-failed", "image": row.name, "reason": str(exc), **self._who(identity)})
@@ -713,7 +733,12 @@ class CosignSigner:
         return run_tool(["crane", *args, *(["--insecure"] if self._insecure else [])], env=env)
 
     def sign(
-        self, row: ContainerImage, annotations: Mapping[str, str], *, record: Callable[[str], None]
+        self,
+        row: ContainerImage,
+        annotations: Mapping[str, str],
+        *,
+        record: Callable[[str], None],
+        expected_digest: str | None = None,
     ) -> SignedImage:
         origin = row.provenance.built_by
         if not isinstance(origin, JobOrigin) or origin.system_tag is None:
@@ -733,6 +758,8 @@ class CosignSigner:
             digest = self._crane("digest", f"{self._host}/{row.repository}:{origin.system_tag}", env=env)
             if not digest.startswith("sha256:") or len(digest) != len("sha256:") + 64:
                 raise SigningFailed(f"crane reported {digest!r} for {row.name}'s system tag, which is not a digest")
+            if expected_digest is not None and digest != expected_digest:
+                raise SigningRefused(f"{row.name}'s system tag names {digest}, but it may only be {expected_digest}")
             reference = f"{self._host}/{row.repository}@{digest}"
             manifest = json.loads(self._crane("manifest", reference, env=env))
             if (

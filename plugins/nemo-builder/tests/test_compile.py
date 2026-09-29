@@ -219,7 +219,7 @@ class TestGrouping:
 
         # ...and the two groups still mount different contexts.
         groups = SuperviseStepConfig.model_validate(spec.steps[1].config).groups
-        assert [g.source.context_path for g in groups] == [None, "tests"]
+        assert [g.source.context_path if g.source else "(import)" for g in groups] == [None, "tests"]
 
     def test_a_root_request_on_a_different_fileset_absorbs_nothing(self) -> None:
         spec = _compile(

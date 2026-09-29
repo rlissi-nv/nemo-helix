@@ -43,7 +43,7 @@ class TestResolve:
 
     def test_an_unqualified_fileset_belongs_to_the_submitting_workspace(self) -> None:
         plan = BuildPlan.resolve(_set(_spec("a"), _spec("b", fileset="other/fs-b")), workspace="ws")
-        assert [image.source.fileset for image in plan.images] == ["ws/fs-a", "other/fs-b"]
+        assert [image.source.fileset if image.source else None for image in plan.images] == ["ws/fs-a", "other/fs-b"]
 
 
 class TestWithDestinations:

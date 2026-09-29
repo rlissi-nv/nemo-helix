@@ -96,9 +96,12 @@ def _build_script(group: SandboxGroup, sandbox: SandboxSpec) -> str:
         # new one.
         quoted = shlex.quote(str(layout))
         lines.append(f"rm -rf {quoted}/* {quoted}/.[!.]* {quoted}/..?*")
+        # A fileset group shares one context; a derived import's context is its own directory,
+        # holding the one Dockerfile `fetch` wrote for it.
+        context = view.context(group.source) if group.source is not None else view.import_context(image.image)
         args = [
             KANIKO_EXECUTOR,
-            f"--context=dir://{view.context(group.source)}",
+            f"--context=dir://{context}",
             f"--dockerfile={image.dockerfile}",
             f"--custom-platform={image.platform}",
             "--no-push",
@@ -129,14 +132,20 @@ def _volume_mounts(group: SandboxGroup, job_sub_path: str) -> list[k8s.V1VolumeM
     -- or code in a base image it pulls -- could rewrite an earlier group's layout, and ``push``
     would sign it as that image. Images in one group share a context and a caller, and still
     share a container, so a ``RUN`` in one can reach its siblings' outputs; nothing else can.
+
+    A derived import's context is the one Dockerfile ``fetch`` wrote for it, under ``imports/``,
+    mounted per image for the same reason. Each derived import is a group of its own: its build
+    runs the upstream publisher's binaries, which must not reach another publisher's image.
     """
     volume, view = WorkLayout(PurePosixPath(job_sub_path)), WorkLayout(SANDBOX_ROOT)
+    if group.source is not None:
+        contexts = [(volume.context(group.source), view.context(group.source))]
+    else:
+        contexts = [(volume.import_context(i.image), view.import_context(i.image)) for i in group.images]
     return [
-        k8s.V1VolumeMount(
-            name="work",
-            sub_path=str(volume.context(group.source)),
-            mount_path=str(view.context(group.source)),
-            read_only=True,
+        *(
+            k8s.V1VolumeMount(name="work", sub_path=str(sub_path), mount_path=str(mount_path), read_only=True)
+            for sub_path, mount_path in contexts
         ),
         *(
             k8s.V1VolumeMount(
@@ -297,12 +306,14 @@ def _results_from_log(log: str | bytes) -> dict[str, int]:
     return results
 
 
-def _exit_code(*, failures: int, total: int) -> int:
-    """This step's exit code, given how many of the set's images failed to build.
+def _exit_code(*, failures: int, total: int, copies: int = 0) -> int:
+    """This step's exit code, given how many of the ``total`` images it built failed.
 
-    **Non-zero only when there is nothing left to publish.** The exit code is not a report -- it
-    is a scheduling decision, because the Jobs dispatcher creates the next step only when this one
-    is `COMPLETED`. Any non-zero exit therefore means `push` never runs, for the whole set.
+    **Non-zero only when there is nothing left to publish:** every image built here failed, and
+    the set has no ``copies`` -- images no sandbox builds, which `fetch` already pulled. The exit
+    code is not a report -- it is a scheduling decision, because the Jobs dispatcher creates the
+    next step only when this one is `COMPLETED`. Any non-zero exit therefore means `push` never
+    runs, for the whole set, copies included.
 
     An earlier version returned 1 whenever *any* image failed. One broken Dockerfile in a set of
     ten then published zero images, and all ten rows failed -- the opposite of what every
@@ -313,7 +324,7 @@ def _exit_code(*, failures: int, total: int) -> int:
     state. Exactly the images that were published completed, and the failure sweep fails the rest
     once the job has ended.
     """
-    if total and failures >= total:
+    if total and failures >= total and not copies:
         return 1
     return 0
 
@@ -363,4 +374,4 @@ def main() -> int:
 
     if failures:
         logger.error("%d of %d image(s) failed to build", failures, total)
-    return _exit_code(failures=failures, total=total)
+    return _exit_code(failures=failures, total=total, copies=config.copies)

@@ -25,7 +25,12 @@ from nemo_builder_plugin.backend import BackendRefused, StepEntitlement
 from nemo_builder_plugin.compile import compile_build_set
 from nemo_builder_plugin.config import BuilderConfig
 from nemo_builder_plugin.entities import Guarantees
-from nemo_builder_plugin.identity import compose_system_tag, validate_repository
+from nemo_builder_plugin.identity import (
+    ImageIdentityError,
+    compose_system_tag,
+    require_allowed_registry,
+    validate_repository,
+)
 from nemo_builder_plugin.plan import BuildPlan, Destination, PlannedImage
 from nemo_builder_plugin.signing import DeploymentKeyPolicy
 from nemo_helix_plugin.jobs.spec import HelixJobSpec
@@ -68,11 +73,14 @@ class ExecutionBackend:
     # --- The interface -----------------------------------------------------------------------
 
     def check(self, plan: BuildPlan) -> None:
-        """Refuse everything on a deployment that cannot build; nothing else is refused here.
+        """Refuse everything on a deployment that cannot build, and what this one will not do.
 
         The kill switch first: a disabled deployment says so whatever was asked of it. Then the
-        three settings nothing can default. Past those this backend honors every request -- it
-        publishes where a spec asks and derives a destination where it doesn't.
+        three settings nothing can default. Then the request: a runtime the operator wrote no
+        layer for, and an import from a registry the operator did not allow -- every import is
+        published and signed, so the allowlist is the operator's statement of whose images this
+        deployment's key will vouch for. Each is a deployment gap (409), not a malformed request:
+        the reference is well-formed, and this deployment will not sign images from there.
         """
         if not self._config.execution_enabled:
             raise BackendRefused(
@@ -82,6 +90,23 @@ class ExecutionBackend:
         self._registry()
         self._broker()
         self._public_key()
+
+        runtime = plan.build_set.runtime
+        if runtime is not None and plan.runtime_layer is None:
+            known = ", ".join(sorted(self._config.runtime_layers)) or "none"
+            raise BackendRefused(f"runtime {runtime!r} is not configured on this deployment (configured: {known})")
+        allowed = self._config.import_registries
+        for image in plan.imports:
+            assert image.upstream is not None
+            if not allowed:
+                raise BackendRefused(
+                    f"build spec {image.spec.name!r} imports {image.upstream.normalized_ref}, but imports are "
+                    "disabled on this deployment (builder.import_registries is empty)"
+                )
+            try:
+                require_allowed_registry(image.upstream, allowed)
+            except ImageIdentityError as exc:
+                raise BackendRefused(f"build spec {image.spec.name!r}: {exc}") from exc
 
     def destination(self, image: PlannedImage) -> Destination:
         """The deployment's registry, under the submitting workspace, with a per-row system tag.

@@ -37,7 +37,7 @@ from nemo_builder_plugin.broker import (
     StepIdentity,
 )
 from nemo_builder_plugin.config import BuilderConfig
-from nemo_builder_plugin.entities import ContainerImage, Guarantees, JobOrigin, Provenance
+from nemo_builder_plugin.entities import ContainerImage, Guarantees, JobOrigin, Provenance, UpstreamImage
 from nemo_builder_plugin.execution import ExecutionBackend
 from nemo_builder_plugin.registry_auth import IssuedToken, RegistryAuthError
 from nemo_builder_plugin.run import broker as broker_module
@@ -53,6 +53,7 @@ from nemo_builder_plugin.run.broker import (
     Review,
     SignedImage,
     SigningFailed,
+    SigningRefused,
     TokenExchange,
     TokenExchangeConfig,
     _handler,
@@ -181,17 +182,26 @@ class FakeRegistry:
 
 
 class FakeSigner:
-    """Resolves every system tag to ``DIGEST``, then records it, then signs -- in that order."""
+    """Resolves every system tag to ``DIGEST``, records it, then signs -- unless told to expect another."""
 
     def __init__(self) -> None:
         self.signed: list[tuple[str, dict[str, str]]] = []
+        self.expected: list[str | None] = []
         self.fail = False
 
     def sign(
-        self, row: ContainerImage, annotations: Mapping[str, str], *, record: Callable[[str], None]
+        self,
+        row: ContainerImage,
+        annotations: Mapping[str, str],
+        *,
+        record: Callable[[str], None],
+        expected_digest: str | None = None,
     ) -> SignedImage:
+        self.expected.append(expected_digest)
         if self.fail:
             raise SigningFailed("registry unreachable")
+        if expected_digest is not None and expected_digest != DIGEST:
+            raise SigningRefused(f"{row.name}'s system tag names {DIGEST}, but it may only be {expected_digest}")
         record(DIGEST)
         self.signed.append((row.name, dict(annotations)))
         return SignedImage(digest=DIGEST, payload=b'{"payload":1}', signature=b"sig")
@@ -378,6 +388,34 @@ class TestSign:
     @pytest.mark.parametrize("body", [b"", b"[]", b'{"image": 3}', b"{"])
     def test_a_body_that_names_no_image_is_a_400(self, body: bytes) -> None:
         assert World().broker.sign(authorization=_basic("push-token"), body=body).status == 400
+
+    def test_a_build_is_signed_whatever_its_system_tag_names(self) -> None:
+        world = World()
+        self._sign(world)
+        assert world.signer.expected == [None]
+
+    def test_a_copy_is_signed_only_as_its_upstream_digest(self) -> None:
+        """The system tag must name exactly the publisher's image, or nothing is signed."""
+        copy = _row()
+        assert isinstance(copy.provenance.built_by, JobOrigin)
+        copy.provenance.built_by.upstream = UpstreamImage(
+            image_ref="docker.io/library/alpine@" + DIGEST, manifest_digest=DIGEST
+        )
+        world = World(rows=[copy])
+        assert self._sign(world).status == 200
+        assert world.signer.expected == [DIGEST]
+
+    def test_a_copy_whose_system_tag_names_anything_else_is_refused(self) -> None:
+        copy = _row()
+        assert isinstance(copy.provenance.built_by, JobOrigin)
+        other = "sha256:" + "e" * 64
+        copy.provenance.built_by.upstream = UpstreamImage(
+            image_ref="docker.io/library/alpine@" + other, manifest_digest=other
+        )
+        world = World(rows=[copy])
+        reply = self._sign(world)
+        assert reply.status == 403 and world.signer.signed == []
+        assert world.audit[-1]["decision"] == "sign-refused"
 
     def test_a_signing_failure_is_a_502_and_audited_as_one(self) -> None:
         world = World()
@@ -721,6 +759,15 @@ class TestCosign:
         signer, calls = self._signer(monkeypatch, self.MANIFEST, config)
         signer.sign(_row(), signature_annotations(_row()), record=lambda digest: None)
         assert ["env", "hunter2"] in calls
+
+    def test_a_copy_is_not_signed_as_anything_but_upstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        signer, calls = self._signer(monkeypatch, {"mediaType": "application/vnd.oci.image.manifest.v1+json"})
+        recorded: list[str] = []
+        with pytest.raises(SigningRefused, match="may only be"):
+            signer.sign(
+                _row(), signature_annotations(_row()), record=recorded.append, expected_digest="sha256:" + "e" * 64
+            )
+        assert [call[1] for call in calls] == ["digest"] and recorded == []
 
     def test_an_index_is_not_signed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         signer, calls = self._signer(

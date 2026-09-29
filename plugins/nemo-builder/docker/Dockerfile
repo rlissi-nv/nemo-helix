@@ -19,9 +19,9 @@ FROM ghcr.io/sigstore/cosign/cosign:v2.5.3 AS cosign
 
 FROM python:3.12-slim AS runtime
 
-# `push` shells out to crane; the broker to crane and cosign. They are copied from their upstream
-# images rather than curl'd, so the version is pinned by the FROM lines above and is visible in a
-# diff.
+# `fetch` shells out to crane to pull copies, `push` to publish, and the broker to crane and
+# cosign. They are copied from their upstream images rather than curl'd, so the version is pinned by
+# the FROM lines above and is visible in a diff.
 COPY --from=crane /ko-app/crane /usr/local/bin/crane
 COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
 

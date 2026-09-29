@@ -4,7 +4,8 @@
 # NeMo Builder Plugin
 
 Container image builds for NeMo Helix. A caller submits Dockerfiles whose build context is already
-in a Files fileset. The plugin builds them with kaniko in a locked-down namespace, and a credential
+in a Files fileset, or names an image someone else already published -- a benchmark release -- to
+import by digest. The plugin builds with kaniko in a locked-down namespace, and a credential
 broker hands the push step a registry token for exactly that build's destinations and signs what it
 pushed. The build's last step delivers the signature to the platform, which verifies it and
 records the signed digest as a `ContainerImage` entity that consumers can pin.
@@ -33,8 +34,8 @@ There is no CLI or SDK accessor yet; use the REST API.
 
 A deployment runs exactly one **backend**, chosen by the operator (`builder.backend`). The one
 implemented is `execution`: build in this cluster. A submitted build set becomes one Jobs job with
-three steps, each under its own ServiceAccount. The caller's Dockerfile runs in a fourth pod, the
-sandbox, which is not a job step and holds nothing:
+three steps -- two for a set of only copies -- each under its own ServiceAccount. The caller's
+Dockerfile runs in a fourth pod, the sandbox, which is not a job step and holds nothing:
 
 | | Runs as | Holds | Work volume | Runs caller code |
 |---|---|---|---|---|
@@ -60,8 +61,10 @@ the name of a build whose rows never got their job (see [Constraints](#constrain
    `revision` is refused.
 2. **`fetch`** clears anything an earlier run of the job left behind, then copies each fileset, or
    just its `context_path`, onto the work volume as the submitting user. A request naming a
-   fileset the submitter can't read fails here.
-3. **`build`** creates one sandbox pod per distinct fileset and `context_path`. The sandbox runs
+   fileset the submitter can't read fails here. It also brings in imports and appends the runtime
+   layer; see [Imports and runtimes](#imports-and-runtimes).
+3. **`build`** creates one sandbox pod per distinct fileset and `context_path`, and one per derived
+   import. The sandbox runs
    kaniko once per image with `--no-push`, writing an OCI layout to that image's output directory,
    which it empties first. The sandbox has:
    - no ServiceAccount token, environment variables or secrets
@@ -94,11 +97,39 @@ the name of a build whose rows never got their job (see [Constraints](#constrain
    step delivers its signatures before it exits, so none is coming.
 
 One failed Dockerfile doesn't stop the rest of the set: the other images still build, publish and
-complete, and only the failed image's row ends `failed`. If every image in a set fails, `push` never
-runs.
+complete, and only the failed image's row ends `failed`. If every image a set builds fails, and the
+set has no copies to publish, `push` never runs.
 
 Every step finds files on the work volume through one `WorkLayout` (in `steps.py`). Step configs
 name filesets and images, never paths, and no step config carries a credential or the name of one.
+
+## Imports and runtimes
+
+A published benchmark image is the benchmark: its digest is the image the benchmark's published
+results were produced with, and a rebuild from its Dockerfile is a different image. So a spec can
+name the published image instead of a fileset, and the plugin publishes it into the deployment's
+registry, signed, with the upstream recorded on the row and in the signature.
+
+What happens to it depends on the **runtime** the set names:
+
+| The set names | An import is | How |
+|---|---|---|
+| no runtime | a **copy** | `fetch` pulls the image by digest (`crane pull`) into the slot a build would have written, and `push` publishes it. Nothing runs, so a copy needs no sandbox; a set of only copies has no `build` step. `push` refuses a layout whose digest isn't upstream's, the broker refuses to sign any digest but upstream's, and the signature route refuses a signature naming any other. |
+| a runtime | a **derived** image | `fetch` writes a Dockerfile that is `FROM <upstream>@<digest>` plus the runtime's layer, and a sandbox of its own builds it: the build runs the publisher's binaries, which must not reach any other image. The digest is new; the row and the signature name the base. |
+
+A **runtime layer** adapts images to the place that runs them -- a non-root user, the tools an
+agent harness expects, a writable home. The operator defines layers by name in
+`runtime_layers`; a set picks one with `runtime`. `fetch` appends it to every Dockerfile in the
+set, after hashing the context, and each row -- and each signature -- records `<name>@<version>`. A
+Dockerfile the layer can't safely follow -- one whose last line continues onto the next, or that
+sets a different escape character -- would change how the layer reads, so that image's build is
+failed instead. A runtime belongs to the consumer, not the cluster: one cluster can host two agent
+harnesses whose images need different things.
+
+Imports are refused unless the operator lists the upstream registry in `import_registries`
+(`docker.io` covers Docker Hub's other hostnames). Every import is signed, so that list says whose
+images the deployment will sign for. A pinned image must be for the spec's `platform`: from an
+index, the matching entry is taken, and a single-platform image is checked against it.
 
 ## API
 
@@ -117,6 +148,11 @@ All routes are under `/apis/builder/v2/workspaces/{workspace}`.
       "dockerfile": "Dockerfile",
       "platform": "linux/amd64",
       "output": {"repository": "demo/hello", "tag": "v1"}
+    },
+    {
+      "name": "verifier",
+      "source": {"type": "image", "image": "docker.io/harborframework/terminal-bench@sha256:5f8a8a3d..."},
+      "output": {"repository": "demo/verifier", "tag": "v4.0.0"}
     }
   ]
 }
@@ -126,16 +162,20 @@ All routes are under `/apis/builder/v2/workspaces/{workspace}`.
 |---|---|
 | `name` | What is being built. Reused across rebuilds. Lowercase letters, digits and single hyphens, starting with a letter, and short enough that every name built from it fits in 63 characters. |
 | `revision` | The caller's own version number for `name`, starting at 1. Use a new revision for every build. |
+| `runtime` | Optional. The runtime the images are for, from the operator's `runtime_layers`. Its layer is appended to every image in the set, and it turns imports from copies into derived images. |
 | `build_specs` | Up to 100 specs. |
 | `build_specs[].name` | The image's name within the set, unique in it: lowercase letters and digits, joined by `.`, `_` or `-`, at most 63 characters. It is a repository path component, because an image with no `output` is published under it. |
+| `source.type` | `fileset` (the default) or `image`. |
 | `source.fileset` | The fileset holding the build context: `name` in this workspace, or `workspace/name`. |
 | `source.context_path` | Optional subdirectory of the fileset to use as the context. Relative, with no `..`. Omit it to use the whole fileset. |
-| `dockerfile` | Path relative to the context. Absolute paths and `..` are rejected. Defaults to `Dockerfile`. |
-| `platform` | Passed to kaniko. Defaults to `linux/amd64`. |
+| `source.image` | For `type: image`: the published image, pinned by digest, e.g. `docker.io/org/app@sha256:...`. Shorthand is expanded, a tag beside the digest is dropped, and a tag alone is rejected. |
+| `dockerfile` | Path relative to the context. Absolute paths and `..` are rejected. Defaults to `Dockerfile` for a fileset source; rejected on an image source. |
+| `platform` | Passed to kaniko, and for an import, which platform to take from a multi-platform index. Defaults to `linux/amd64`. |
 | `output.repository`, `output.tag` | Optional. Where the image is published, within your workspace's part of the registry. Tags containing `--` or starting with `sha256-` are reserved for system tags and signatures. |
 
 Every request model rejects fields it doesn't know, so a misspelt field is a `422` rather than
-silently ignored.
+silently ignored. A source that names both `fileset` and `image` is refused rather than read as one
+or the other.
 
 On the `execution` backend every image goes to the deployment's one registry. With an `output`, at
 `<registry>/<repository_prefix>/<workspace>/<output.repository>:<output.tag>`; without one, at
@@ -149,14 +189,18 @@ else.
 A successful submit returns `201` with the job name and the `pending` rows. Poll the rows, not
 the job: images in a set finish independently.
 
+Each import's upstream is read once, at submit, to learn the manifest digest for the spec's
+platform. That value goes on the row, and it is what a copy is held to afterwards. It is the only
+registry read the platform makes.
+
 | Status | When |
 |---|---|
 | `201` | Rows created and job submitted, or the same request was submitted before and these are its rows and job. |
-| `400` | Two specs would publish the same `repository:tag`, or the workspace name can't be a repository path component. |
+| `400` | Two specs would publish the same `repository:tag`; the workspace name can't be a repository path component; or an import doesn't resolve upstream: its digest doesn't exist, its repository is private, or it has no image for the spec's `platform`. |
 | `403` | The caller may submit builds but may not create jobs in the workspace. |
-| `409` | This deployment can't build: builds are switched off (`execution_enabled: false`), or `registry`, `credential_broker` or `signing_public_key` is unset. Or this `name` and `revision` were already submitted with a different request, or its job's name is held by a job this request didn't create; the rows it wrote are then failed. |
-| `422` | The body failed validation: for example a path outside the context or fileset, a set or spec name that doesn't fit, more than 100 specs, duplicate spec names, a `revision` below 1, a repository or tag that isn't valid or is reserved, or an unknown field such as `output.registry`. |
-| `502` | Another platform service refused the build. |
+| `409` | This deployment can't build it: builds are switched off (`execution_enabled: false`); `registry`, `credential_broker` or `signing_public_key` is unset; an import's registry isn't in `import_registries`; or `runtime` names a runtime that isn't configured. Or this `name` and `revision` were already submitted with a different request, or its job's name is held by a job this request didn't create; the rows it wrote are then failed. |
+| `422` | The body failed validation: for example a path outside the context or fileset, a set or spec name that doesn't fit, more than 100 specs, duplicate spec names, a `revision` below 1, a repository or tag that isn't valid or is reserved, an import not pinned by digest, a `dockerfile` on an image source, or an unknown field such as `output.registry`. |
+| `502` | An import's upstream registry couldn't be read, or another platform service refused the build. Retrying may work. |
 | `500` | Anything else. |
 
 ### `GET /container-images` and `GET /container-images/{name}`
@@ -177,7 +221,7 @@ that doesn't exist. Each row is a `ContainerImage`:
 | `platform` | The platform the image was built for. |
 | `provenance.backend` | The backend that produced the image, such as `execution`. |
 | `provenance.guarantees` | What that backend promises for every row it produces: what the caller's `RUN` could reach, whether the build could reach cluster networks, the signer, whether the tag can move, and how far the push credential reached (`per-repository` only where the registry narrows tokens). Check the property you need rather than the backend's name. |
-| `provenance.built_by` | The build set, revision, job and system tag that produced the image, and `request_digest`, the digest of the request that did. |
+| `provenance.built_by` | The build set, revision, job and system tag that produced the image, and `request_digest`, the digest of the request that did. For an import, also `upstream` (the image and the platform manifest it resolved to); for a set that named a runtime, `runtime_layer` (`<name>@<version>`). |
 | `source_digest` | Reserved; always `null` for now. |
 
 Names are derived from the request:
@@ -200,7 +244,8 @@ The payload is cosign's simple-signing payload, byte for byte as it was signed: 
 verifier finds beside the image in the registry. The route verifies, in order: the signature,
 under the deployment's public key; that the payload names a digest; that it names this row's
 repository; that its annotations are this row's workspace, image, build set, revision, job, request
-digest and backend; and that the row is `pending`. Then one write, conditional on the row's
+digest and backend, its upstream for an import, and its runtime layer for a set that names a
+runtime; for a copy, that the digest is upstream's; and that the row is `pending`. Then one write, conditional on the row's
 version, makes it `ready`. The caller must hold `builder.container-images.complete`, which the
 Editor role has, but what the route trusts is the signature.
 
@@ -246,9 +291,9 @@ does not hand out its own credential.
 
 **Signing.** `POST /sign` names a row and nothing else. The broker checks the same entitlement,
 and that the row's repository and system tag parse as this system writes them. It resolves the
-system tag in the registry with a token it gets for itself, refuses an index, signs by digest with
-cosign -- every annotation from the row, the transparency log upload off -- and returns the signed
-payload and signature.
+system tag in the registry with a token it gets for itself, refuses an index -- and, for a copy,
+any digest but upstream's -- signs by digest with cosign, every annotation from the row and the
+transparency log upload off, and returns the signed payload and signature.
 
 **Audit.** Every token issued, every signature -- before it is made, naming the digest, and again
 with its outcome -- and every refusal of an identified step is a line on the broker's stdout,
@@ -309,6 +354,12 @@ builder:
     ...
   sweep_interval_seconds: 30
   execution_enabled: true                        # false refuses new builds; reads keep working
+  import_registries: [docker.io]                 # hosts an import may come from; empty refuses all
+  runtime_layers:                                # named by BuildSet.runtime
+    harbor-sandbox:
+      version: "1"                               # recorded on each row as harbor-sandbox@1
+      dockerfile: |                              # appended to every image; no FROM allowed
+        USER 1000
 ```
 
 Three settings have no safe default: `registry`, `credential_broker` and `signing_public_key`. If
@@ -558,17 +609,18 @@ The tests need no cluster, registry or running platform.
 |---|---|
 | `service.py` | The REST routes |
 | `_perms.py`, `authz.py` | The routes' permissions, and the plugin's authz scope |
-| `schema.py` | The request models: `BuildSet`, `BuildSpec`, `FileSetSource`, `BuildOutput` |
+| `schema.py` | The request models: `BuildSet`, `BuildSpec`, `FileSetSource`, `ImageSource`, `BuildOutput` |
 | `plan.py` | `BuildPlan`: a request resolved into names, then placed by the backend |
 | `backend.py` | The backend interface: what a backend refuses, compiles, places, promises, and entitles its steps to, and how its signatures are checked |
 | `backends.py`, `execution.py` | The deployment's backend, and the `execution` backend |
-| `compile.py` | Turns a plan into the three-step `HelixJobSpec`, as a pure function |
+| `compile.py` | Turns a plan into the `HelixJobSpec` -- three steps, or two for a set of copies -- as a pure function |
 | `signing.py` | What the broker's signature says, and how the platform verifies it and ties it to a row |
 | `submit.py` | The submit sequence: plan, then rows, then the job |
 | `completion.py` | Verifying signatures, and the one write that makes a row `ready` |
 | `controller.py` | The failure sweep |
 | `broker.py` | The broker's rules: which step a pod is, and what its job may have |
 | `registry_auth.py` | Registry tokens by the Distribution token specification |
+| `registry.py` | The anonymous OCI Distribution client that resolves an import's upstream at submit |
 | `client.py` | A typed client for the builder's own routes |
 | `steps.py` | What each step's config contains, and `WorkLayout` |
 | `entities.py` | `ContainerImage` |
@@ -614,5 +666,10 @@ The tests need no cluster, registry or running platform.
   refused, because the broker runs cosign v2, which writes the tag.
 - **Base images come from public registries.** `registry_mirror` is wired but unset, so nothing
   bounds what a Dockerfile can pull `FROM`. Only a mirror the sandbox can reach over the public
-  internet works without editing the NetworkPolicy, which blocks private addresses.
+  internet works without editing the NetworkPolicy, which blocks private addresses. Copies don't
+  use the mirror either: `fetch` pulls them straight from the upstream registry, anonymously.
+- **Imports resolve their upstream from the API process.** It needs outbound HTTPS to every
+  registry in `import_registries`, and it follows the redirects those registries send, which is
+  how Docker Hub serves image configs. An allowlisted registry is trusted not to redirect into
+  the cluster's network; plain-HTTP redirects are refused.
 - **Upstream kaniko was archived** on 2025-06-03. The default `sandbox_image` still points at it.

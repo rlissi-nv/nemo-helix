@@ -19,7 +19,7 @@ signature it cannot produce.
 **Verification, in order:**
 
 1. The signature verifies under the backend's trust root.
-2. The payload names a manifest digest.
+2. The payload names a manifest digest -- for a copy, upstream's.
 3. The payload's repository is the row's destination.
 4. The payload's claims tie it to this row, under the backend's signature policy.
 5. The row is ``pending``.
@@ -129,6 +129,12 @@ def check_signature(
 
     policy.verify(payload, signature)
     signed = read_payload(payload)
+    if origin.is_copy and origin.upstream is not None and signed.digest != origin.upstream.manifest_digest:
+        # A copy's identity is a claim about someone else's image, checked by the broker before it
+        # signed and again here: its digest must be the one the submit path resolved upstream.
+        raise SignatureRefused(
+            f"{row.name} is a copy of {origin.upstream.image_ref}, but the signature names {signed.digest}"
+        )
     destination = f"{row.registry}/{row.repository}"
     if signed.reference != destination:
         raise SignatureRefused(f"the signature is for {signed.reference}, not {row.name}'s {destination}")
