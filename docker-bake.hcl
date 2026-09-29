@@ -377,11 +377,6 @@ group "nhx-automodel-gpu-wheels" {
   targets = [
     "causal-conv1d-wheel",
     "mamba-ssm-wheel",
-  ]
-}
-
-group "nhx-rl-gpu-wheels" {
-  targets = [
     "rl-cuda-ext-wheel",
   ]
 }

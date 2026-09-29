@@ -469,16 +469,16 @@ RUN chmod -R a+rX /opt/cpython && \
     chmod +x /usr/local/bin/build-rl-cuda-ext-wheel.sh && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        git \
-        libibverbs-dev && \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libibverbs-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     ARCH="$(uname -m)" && \
     F="cmake-${CMAKE_VERSION}-linux-${ARCH}" && \
     curl --retry 3 --retry-delay 2 -fsSL -o "${F}.tar.gz" \
-        "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/${F}.tar.gz" && \
+    "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/${F}.tar.gz" && \
     tar -xzf "${F}.tar.gz" && \
     cp -r "${F}/bin/"* /usr/local/bin/ && \
     cp -r "${F}/share/"* /usr/local/share/ && \
@@ -488,10 +488,11 @@ RUN chmod -R a+rX /opt/cpython && \
     python3.13 -c 'import ssl; print(ssl.OPENSSL_VERSION)' && \
     uv venv --python /opt/cpython/bin/python3.13 /opt/venv && \
     uv pip install --python /opt/venv/bin/python \
-        --index-url https://download.pytorch.org/whl/cu130 \
-        --extra-index-url https://pypi.org/simple \
-        "torch==2.13.0+cu130" \
-        ninja packaging "setuptools>=80" wheel psutil einops numpy pybind11 && \
+    --index-url https://download.pytorch.org/whl/cu130 \
+    --extra-index-url https://pypi.org/simple \
+    --index-strategy unsafe-best-match \
+    "torch==2.13.0+cu130" \
+    ninja packaging "setuptools>=80" wheel psutil einops numpy pybind11 && \
     mkdir -p /wheels
 
 # causal-conv1d 1.5.4. Installed into the mamba-ssm stage before that build.
@@ -521,8 +522,8 @@ RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/FlashMLA "$FLA
 # deep-ep 1.2.1+17cfb81. libibverbs-dev is in the base. nvshmem is a build input.
 FROM rl-cuda-ext-base AS rl-cuda-ext-deep-ep
 RUN uv pip install --python /opt/venv/bin/python \
-        --extra-index-url https://pypi.org/simple \
-        "nvidia-nvshmem-cu13==3.7.2" && \
+    --extra-index-url https://pypi.org/simple \
+    "nvidia-nvshmem-cu13==3.7.2" && \
     build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepEP.git "$DEEP_EP_REV"
 
 # deep-gemm 2.5.0. CUDA 13 moved the CCCL headers; CPLUS_INCLUDE_PATH is set on the base.
@@ -544,8 +545,8 @@ ENV NVTE_FRAMEWORK=pytorch \
     CUDNN_HOME=/opt/venv/lib/python3.13/site-packages/nvidia/cudnn \
     CUDNN_PATH=/opt/venv/lib/python3.13/site-packages/nvidia/cudnn
 RUN uv pip install --python /opt/venv/bin/python \
-        --extra-index-url https://pypi.org/simple \
-        "nvidia-cudnn-cu13==9.20.0.48" && \
+    --extra-index-url https://pypi.org/simple \
+    "nvidia-cudnn-cu13==9.20.0.48" && \
     build-rl-cuda-ext-wheel.sh sdist "transformer-engine-torch==2.18.0"
 
 # One /wheels directory, one architecture per platform build.
