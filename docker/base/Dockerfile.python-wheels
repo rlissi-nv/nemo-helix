@@ -30,6 +30,10 @@
 #######
 
 ARG CUDA_VERSION=12.8.1
+# FROM args for the rl-cuda-ext-wheel stages. They must be global (before the
+# first FROM) or the FROM lines see them as empty.
+ARG RL_CUDA_EXT_BASE=nvcr.io/nvidia/cuda-dl-base:26.07-cuda13.3-devel-ubuntu24.04
+ARG RL_CUDA_EXT_PYTHON=3.13.15
 
 # =============================================================================
 # Shared base: CUDA + Python 3.11 + torch (required by extension builds)
@@ -435,9 +439,6 @@ COPY --from=decord2-wheel-builder-py313 /wheels /wheels
 # causal-conv1d / mamba-ssm stages above: those are a different Python, torch,
 # and source revision.
 # =============================================================================
-ARG RL_CUDA_EXT_BASE=nvcr.io/nvidia/cuda-dl-base:26.07-cuda13.3-devel-ubuntu24.04
-ARG RL_CUDA_EXT_PYTHON=3.13.15
-
 FROM python:${RL_CUDA_EXT_PYTHON}-slim-bookworm AS rl-cuda-ext-cpython
 
 FROM ${RL_CUDA_EXT_BASE} AS rl-cuda-ext-base
