@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Copy NeMo-RL's CUDA extension pins into the wheel Dockerfile.
 
+RUN THIS WHEN THE PIN FOR RL CHANGES DEPS.
+Then regenerate Dockerfile.python-wheels.
+
 Checks out NEMO_RL_REF from docker/rl/Dockerfile.nhx-rl-base, reads the git
 revisions and version pins from that commit's pyproject.toml, and writes them
 into docker/base/Dockerfile.python-wheels. NeMo-RL's own files stay as they
@@ -21,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[3]  # Assumes NeMo-RL is a sibling of this repo.
 RL_DOCKERFILE = REPO / "docker" / "rl" / "Dockerfile.nhx-rl-base"
 WHEELS_DOCKERFILE = REPO / "docker" / "base" / "Dockerfile.python-wheels"
 
