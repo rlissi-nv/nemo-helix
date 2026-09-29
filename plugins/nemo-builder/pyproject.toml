@@ -31,7 +31,8 @@ nemo-helix = { path = "../../packages/nemo_helix", editable = true }
 nemo-helix-plugin = { path = "../../packages/nemo_helix_plugin", editable = true }
 
 [project.scripts]
-# `nhx-build broker` is the credential broker's command.
+# What the three job steps run as, and the credential broker. The compiler emits
+# `["nhx-build", "<step>"]` as each step's container command; the launcher execs it.
 nhx-build = "nemo_builder_plugin.run.main:main"
 
 [project.entry-points."nemo.services"]
