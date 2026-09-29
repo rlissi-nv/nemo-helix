@@ -69,7 +69,7 @@ printf '%s' "$INFERENCE_NVIDIA_API_KEY" | nemo secrets create nvidia-inference-k
 ## Environment
 
 - **Port**: `8080` (CLI default — do NOT pass a custom `--base-url`)
-- **`export NHX_BASE_URL=http://localhost:8080` — required when targeting a local platform.** If your `~/.config/nhx/config.yaml` already points at a remote cluster, the CLI uses that base URL and ignores the local platform entirely. Setting this env var overrides the config file for the current shell session.
+- **`: "${NHX_BASE_URL:=http://localhost:8080}"; export NHX_BASE_URL` — point the CLI at a local platform without clobbering a configured remote.** This sets the base URL to the local default *only when it is unset*, so an existing `NHX_BASE_URL` (or a remote in `~/.config/nhx/config.yaml`) is respected. If your config already points at a remote cluster and `NHX_BASE_URL` is unset, the CLI uses that remote and ignores the local platform. Set `NHX_BASE_URL` explicitly only when you deliberately want to override the config for the current shell session.
 - Workspace: `my-workspace` (substitute as needed; `default` also works)
 - Backend: `https://inference-api.nvidia.com/v1`
 

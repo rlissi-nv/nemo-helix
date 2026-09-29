@@ -55,7 +55,8 @@ they pick. Do not dump every path at them.
 ## 1. Pre-flight
 
 ```bash
-export NHX_BASE_URL=http://localhost:8080   # or wherever the platform runs
+: "${NHX_BASE_URL:=http://localhost:8080}"   # default to local only when unset; respect a configured remote
+export NHX_BASE_URL
 nemo agent-hardener doctor
 ```
 

@@ -180,7 +180,7 @@ Val loss from training is **not** accuracy — always run a generation eval for 
 From **nemo-helix** git root:
 
 ```bash
-export NHX_BASE_URL=http://127.0.0.1:8080   # user platform URL when not localhost
+export NHX_BASE_URL="${NHX_BASE_URL:-http://127.0.0.1:8080}"   # user platform URL when not localhost; respects a configured remote
 
 # Base vs one adapter (--base-url optional when NHX_BASE_URL is set)
 uv run python plugins/nemo-customizer/src/nemo_customizer/skills/nemo-customizer/references/eval_helpers.py \

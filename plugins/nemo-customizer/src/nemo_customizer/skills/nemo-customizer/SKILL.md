@@ -273,7 +273,7 @@ Substitute `<hf-repo>`, `<hf-dataset>`, `<model-entity>`, `<weights-fileset>`, `
 **Setup**
 
 ```bash
-export NHX_BASE_URL=http://127.0.0.1:8080   # user override only
+export NHX_BASE_URL="${NHX_BASE_URL:-http://127.0.0.1:8080}"   # user override only; respects a configured remote
 cd /path/to/nemo-helix
 nemo auth status   # skip login if auth disabled; if enabled + unsigned JWT allowed → login --unsigned-token --email admin@example.com
 nemo jobs list-execution-profiles -f json   # platform GPU profiles → automodel; set training.execution_profile if needed
