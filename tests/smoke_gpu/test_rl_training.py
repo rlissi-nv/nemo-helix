@@ -25,6 +25,7 @@ So ``import vllm`` from the base venv is *expected* to fail and would prove noth
 run each import in the venv that actually owns the package, using that venv's own interpreter.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from file_removals import assert_file_patterns_absent, read_file_patterns
 from python_package_versions import assert_python_package_min_versions
 
 RAY_VENVS = Path("/opt/ray_venvs")
+DRIVER_BIN = Path("/opt/nemo_rl_venv/bin")
 FINAL_FILE_REMOVALS = Path("/smoke_test/removals/files/final/customizer-codecs.txt")
 SOUNDFILE_FILE_REMOVALS = {
     "/opt/nemo_rl_venv/lib/python3.*/site-packages/_soundfile_data/libsndfile_*.so",
@@ -191,6 +193,14 @@ def test_base_wandb_opentelemetry_compat():
 
 
 # --- per-worker venvs: where training actually runs ---------------------------------------------
+
+
+@pytest.mark.smoke_nhx_rl_training
+@pytest.mark.parametrize("actor_fqn", sorted(WORKER_VENV_IMPORTS))
+def test_frozen_environment_wrapper(actor_fqn):
+    """prefetch_venvs.py writes python-<Class> into the driver venv bin, which is on PATH."""
+    wrapper = DRIVER_BIN / f"python-{actor_fqn.rsplit('.', 1)[-1]}"
+    assert os.access(wrapper, os.X_OK), f"missing frozen-environment wrapper {wrapper}"
 
 
 @pytest.mark.smoke_nhx_rl_training

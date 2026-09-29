@@ -1,0 +1,8 @@
+diff --git a/nemo_rl/utils/prefetch_venvs.py b/nemo_rl/utils/prefetch_venvs.py
+--- a/nemo_rl/utils/prefetch_venvs.py
++++ b/nemo_rl/utils/prefetch_venvs.py
+@@ -153,3 +153,3 @@
+     # Create wrapper scripts
+-    wrapper_dir = Path("/usr/local/bin")
++    wrapper_dir = Path("/opt/nemo_rl_venv/bin")
+     created_wrappers = []

@@ -223,10 +223,12 @@ EOF
 # Exclude submodule .git dirs here; a later rm would still leave them in this layer.
 COPY --from=nemo-rl --chown=${BUILD_UID}:${BUILD_GID} --exclude=**/.git . /opt/nemo-rl
 
-# adapter-wheels-v1 vendors verifiers==0.1.14 and has no network. Gym still
-# requests a git checkout of v0.3.1.
-RUN --mount=type=bind,source=docker/rl/patches/nemo-rl-verifiers-pin.patch,target=/tmp/nemo-rl-verifiers-pin.patch \
-    git -C /opt/nemo-rl apply --verbose /tmp/nemo-rl-verifiers-pin.patch
+# Pin verifiers to the offline adapter wheel (0.1.14), and write python-<Actor>
+# wrappers to the build-owned venv bin instead of /usr/local/bin.
+RUN --mount=type=bind,source=docker/rl/patches,target=/tmp/patches,readonly \
+    git -C /opt/nemo-rl apply --verbose \
+        /tmp/patches/nemo-rl-verifiers-pin.patch \
+        /tmp/patches/nemo-rl-prefetch-wrapper-dir.patch
 
 # Editable root only. Dependencies were installed by the sync above.
 RUN umask 022 && uv pip install --python /opt/nemo_rl_venv/bin/python --no-deps -e /opt/nemo-rl
@@ -285,7 +287,8 @@ sync_venv() {
     shift
     env -u UV_NO_SYNC UV_PROJECT_ENVIRONMENT="${venv}" \
         uv sync ${UV_SYNC_MODE} --inexact --directory /opt/nemo-rl "$@" "${SKIP[@]}"
-    uv pip install --python "${venv}/bin/python" --no-deps /mnt/wheels/*.whl
+    # --python selects the venv. --directory keeps uv from reading the git pins in pyproject.toml.
+    uv pip install --directory /tmp --python "${venv}/bin/python" --no-deps /mnt/wheels/*.whl
 }
 sync_venv /opt/ray_venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2 --extra automodel
 sync_venv /opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker --extra mcore --extra nemo_gym
