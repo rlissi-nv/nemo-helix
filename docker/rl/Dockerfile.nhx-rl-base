@@ -9,7 +9,7 @@
 # NEMO_RL_REF; Gym follows as RL's submodule pin.
 #
 # DPO and GRPO train on `automodel` (DTensor V2) or `mcore` (Megatron). GRPO generates on
-# `vllm`. sglang and trtllm are deliberately not built. The old `fsdp` extra is gone.
+# `vllm`. sglang and trtllm are deliberately not built.
 #
 # Two things drive most of what follows, both covered in README.md:
 #   - Workers do not run in the base venv. The `uv sync --extra` calls only warm the uv cache; the

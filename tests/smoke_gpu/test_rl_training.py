@@ -48,18 +48,11 @@ BASE_VENV_MINIMUM_PYTHON_PACKAGE_VERSIONS = {
 
 # Actor FQN -> packages that must import inside that actor's venv.
 #
-# MUST list every venv the build prefetches (the eight filters in docker/rl/Dockerfile.nhx-rl-base
-# resolve to NINE actors, because `vllm.vllm_worker` matches the sync and async workers alike).
-# Listing all nine is what makes a broken prefetch filter fail here instead of silently shipping an
+# MUST list every venv the build prefetches (the six filters in docker/rl/Dockerfile.nhx-rl-base
+# resolve to SEVEN actors, because `vllm.vllm_worker` matches the sync and async workers alike).
+# Listing all seven is what makes a broken prefetch filter fail here instead of silently shipping an
 # image whose workers rebuild their venv on the node at job start.
 WORKER_VENV_IMPORTS = {
-    # DPO policy training, DTensor V1 (--extra fsdp)
-    "nemo_rl.models.policy.workers.dtensor_policy_worker.DTensorPolicyWorker": [
-        "torch",
-        "flash_attn",
-        "mamba_ssm",
-        "causal_conv1d",
-    ],
     # GRPO policy training, DTensor V2 (--extra automodel). nemo_automodel and transformer_engine
     # are checked through distribution metadata instead — see WORKER_VENV_DRIVER_LINKED below.
     "nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2": [
@@ -104,13 +97,6 @@ WORKER_VENV_IMPORTS = {
         "nemo_gym",
         "opensandbox",
         "nemo_rl.environments.sandbox.nemo_gym_actor",
-    ],
-    # Trusted episode broker: creates per-episode sandboxes so the untrusted job sandbox never
-    # holds the OpenSandbox credential.
-    "nemo_rl.environments.sandbox.broker_actor.SandboxEpisodeBrokerActor": [
-        "nemo_gym",
-        "opensandbox",
-        "nemo_rl.environments.sandbox.broker_actor",
     ],
 }
 
@@ -182,17 +168,14 @@ def test_nhx_rl_training_importable():
 def test_sandboxed_gym_driver_imports():
     """The driver must be able to import the mode-B sandbox modules.
 
-    Sandboxed GRPO calls spinup_nemo_gym_actor() in the DRIVER process, which imports
-    nemo_rl.environments.sandbox.{nemo_gym_actor,host.models}. Both reach
-    nemo_gym.sandbox.broker at module scope, so the base venv needs nemo_gym even though
-    the Gym actor itself runs in its own venv. The `uv sync --all-groups` in the base
-    image is exact and prunes the nemo_gym extra, so this is only satisfied by the
-    explicit `uv pip install` of the Gym workspace member — without it, mode B fails at
-    Gym spin-up with `ModuleNotFoundError: No module named 'nemo_gym'`, minutes into a
-    run and only on a sandbox-capable cluster.
+    Sandboxed GRPO loads SandboxedGymActor in the DRIVER process. That module imports
+    sandboxed_gym (host models, orchestrator, Ray broker) and nemo_gym at module scope.
+    The base image's exact sync prunes the nemo_gym extra, so Gym is only present because
+    of the explicit install in Dockerfile.nhx-rl-base, and sandboxed_gym is only present
+    because the training image installs it. Without either, mode B fails at Gym spin-up.
     """
-    from nemo_rl.environments.sandbox.host.models import NemoGymSandboxedConfig  # noqa: F401
     from nemo_rl.environments.sandbox.nemo_gym_actor import SandboxedGymActorConfig  # noqa: F401
+    from sandboxed_gym.host.models import NemoGymSandboxedConfig  # noqa: F401
 
 
 # --- per-worker venvs: where training actually runs ---------------------------------------------
@@ -267,9 +250,9 @@ def test_worker_venvs_symlink_into_shared_cache():
     """Worker venvs must symlink into /opt/uv_cache rather than carry their own copies.
 
     Guards the link-mode/cache layout: a silent fallback to copy mode would multiply image size
-    across the ~30 venvs this image ships.
+    across the prefetched venvs this image ships.
     """
-    venv = RAY_VENVS / "nemo_rl.models.policy.workers.dtensor_policy_worker.DTensorPolicyWorker"
+    venv = RAY_VENVS / "nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2"
     if not (venv / "bin" / "python").exists():
         pytest.skip("policy worker venv not present; covered by test_worker_venv_prefetched")
     torch_init = next(venv.glob("lib/python*/site-packages/torch/__init__.py"), None)
