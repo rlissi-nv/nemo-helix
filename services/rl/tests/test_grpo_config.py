@@ -348,9 +348,13 @@ def test_compiled_config_has_master_config_required_fields(
 
     # None is meaningful, not absent: generation/__init__.py fills stop_token_ids
     # with [tokenizer.eos_token_id] when it is None.
-    for field in ("top_k", "stop_token_ids", "stop_strings"):
+    for field in ("top_k", "val_top_k", "stop_token_ids", "stop_strings"):
         assert field in policy["generation"], f"policy.generation.{field} missing"
         assert policy["generation"][field] is None
+    # Exemplar YAMLs interpolate these from the train sampling params. They are
+    # required, and validation must sample the same way training does.
+    assert policy["generation"]["val_temperature"] == policy["generation"]["temperature"]
+    assert policy["generation"]["val_top_p"] == policy["generation"]["top_p"]
 
     assert policy["make_sequence_length_divisible_by"] == step.parallelism.tensor_parallel_size
 
@@ -618,6 +622,11 @@ def test_generation_sampling_comes_from_the_grpo_hyperparameters(
     assert generation["top_k"] == 20
     # Neutral value, not a knob: the job schema exposes no top_p.
     assert generation["top_p"] == 1.0
+    # Validation uses the same profile. A val_* that differs is a separate code
+    # path, and NeMo-Gym rejects a val_top_k that is not also the train top_k.
+    assert generation["val_temperature"] == 0.7
+    assert generation["val_top_p"] == 1.0
+    assert generation["val_top_k"] == 20
 
 
 def test_generation_samples_the_full_distribution_by_default(
