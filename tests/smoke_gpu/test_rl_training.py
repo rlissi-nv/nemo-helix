@@ -178,6 +178,18 @@ def test_sandboxed_gym_driver_imports():
     from sandboxed_gym.host.models import NemoGymSandboxedConfig  # noqa: F401
 
 
+@pytest.mark.smoke_nhx_rl_training
+def test_base_wandb_opentelemetry_compat():
+    """SDK 1.44 needs ``_ExtendedAttributes`` from api 1.44; api 1.45 removes it.
+
+    wandb imports the SDK metrics path at load time, so a skewed pin fails here before a job
+    reaches the driver. docker/rl/opentelemetry-overrides.txt keeps the matched release line.
+    """
+    from opentelemetry.util.types import _ExtendedAttributes  # noqa: F401
+
+    import wandb  # noqa: F401
+
+
 # --- per-worker venvs: where training actually runs ---------------------------------------------
 
 
@@ -219,6 +231,33 @@ def test_worker_venv_imports(actor_fqn, module):
         pytest.skip(f"venv for {actor_fqn} not present; covered by test_worker_venv_prefetched")
     result = _import_in_venv(venv, module)
     assert result.returncode == 0, f"`import {module}` failed in {venv}:\n{result.stderr}"
+
+
+@pytest.mark.smoke_nhx_rl_training
+@pytest.mark.parametrize("actor_fqn", sorted(WORKER_VENV_IMPORTS))
+def test_worker_venv_wandb_opentelemetry_compat(actor_fqn):
+    """Same api/sdk skew check as the driver, in each prefetched Ray venv that has wandb."""
+    venv = RAY_VENVS / actor_fqn
+    python = venv / "bin" / "python"
+    if not python.exists():
+        pytest.skip(f"venv for {actor_fqn} not present; covered by test_worker_venv_prefetched")
+    has_wandb = subprocess.run(
+        [str(python), "-c", "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('wandb') else 1)"],
+        capture_output=True,
+        text=True,
+    )
+    if has_wandb.returncode != 0:
+        pytest.skip(f"wandb not installed in {venv}")
+    result = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from opentelemetry.util.types import _ExtendedAttributes; import wandb",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"wandb/OpenTelemetry import failed in {venv} (api/sdk skew?):\n{result.stderr}"
 
 
 @pytest.mark.smoke_nhx_rl_training
