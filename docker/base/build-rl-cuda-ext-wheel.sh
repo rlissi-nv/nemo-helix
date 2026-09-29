@@ -31,10 +31,27 @@ if [[ "$mode" == git ]]; then
     fi
     uv build --wheel --no-build-isolation --out-dir "$out" "$src"
 elif [[ "$mode" == sdist ]]; then
+    # uv 0.11.33 has no `uv pip download`. Pull the sdist URL from the PyPI JSON API.
     spec="${2:?sdist mode requires SPEC}"
+    name="${spec%%==*}"
+    version="${spec#*==}"
+    if [[ "$name" == "$spec" || -z "$version" ]]; then
+        echo "sdist spec must be name==version, got: $spec" >&2
+        exit 1
+    fi
     mkdir -p /tmp/sdist
-    uv pip download --python /opt/venv/bin/python --no-deps --no-binary :all: -d /tmp/sdist "$spec"
-    tar -xzf /tmp/sdist/*.tar.gz -C /tmp/sdist
+    url="$(/opt/venv/bin/python -c '
+import json, sys, urllib.request
+name, version = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json") as resp:
+    data = json.load(resp)
+urls = [item["url"] for item in data["urls"] if item["packagetype"] == "sdist"]
+if len(urls) != 1:
+    raise SystemExit(f"expected one sdist for {name}=={version}, found {urls}")
+print(urls[0])
+' "$name" "$version")"
+    curl --retry 3 --retry-delay 2 -fsSL -o /tmp/sdist/src.tar.gz "$url"
+    tar -xzf /tmp/sdist/src.tar.gz -C /tmp/sdist
     srcdir="$(find /tmp/sdist -mindepth 1 -maxdepth 1 -type d -print -quit)"
     uv build --wheel --no-build-isolation --out-dir "$out" "$srcdir"
 else
