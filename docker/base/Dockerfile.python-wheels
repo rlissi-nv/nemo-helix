@@ -495,11 +495,11 @@ RUN chmod -R a+rX /opt/cpython && \
     ninja packaging "setuptools>=80" wheel psutil einops numpy pybind11 && \
     mkdir -p /wheels
 
-# causal-conv1d 1.5.4. Installed into the mamba-ssm stage before that build.
+# causal-conv1d 1.6.2.post1. Installed into the mamba-ssm stage before that build.
 FROM rl-cuda-ext-base AS rl-cuda-ext-causal-conv1d
 RUN build-rl-cuda-ext-wheel.sh git https://github.com/Dao-AILab/causal-conv1d "$CAUSAL_CONV1D_REV"
 
-# mamba-ssm 2.2.6.post3. This revision builds with its own triton dependency;
+# mamba-ssm 2.3.2.post1. This revision builds with its own triton dependency;
 # do not strip triton the way the 2.2.5 stage above does.
 FROM rl-cuda-ext-base AS rl-cuda-ext-mamba-ssm
 COPY --from=rl-cuda-ext-causal-conv1d /wheels /tmp/causal-conv1d-wheels
@@ -510,7 +510,7 @@ RUN uv pip install --python /opt/venv/bin/python --no-deps /tmp/causal-conv1d-wh
 FROM rl-cuda-ext-base AS rl-cuda-ext-nv-grouped-gemm
 RUN build-rl-cuda-ext-wheel.sh git https://github.com/fanshiqing/grouped_gemm "$NV_GROUPED_GEMM_REV" --submodules
 
-# fast-hadamard-transform 1.1.0.
+# fast-hadamard-transform 1.0.4.post1.
 FROM rl-cuda-ext-base AS rl-cuda-ext-fast-hadamard
 RUN build-rl-cuda-ext-wheel.sh git https://github.com/Dao-AILab/fast-hadamard-transform.git "$FAST_HADAMARD_REV"
 
@@ -524,11 +524,11 @@ RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/FlashMLA "$FLA
 # NCCL is a submodule under third-party/nccl.
 FROM rl-cuda-ext-base AS rl-cuda-ext-deep-ep
 RUN uv pip install --python /opt/venv/bin/python \
-        --extra-index-url https://pypi.org/simple \
-        "nvidia-nvshmem-cu13==3.7.2" && \
+    --extra-index-url https://pypi.org/simple \
+    "nvidia-nvshmem-cu13==3.7.2" && \
     build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepEP.git "$DEEP_EP_REV" --submodules
 
-# deep-gemm 2.5.0. CUDA 13 moved the CCCL headers; CPLUS_INCLUDE_PATH is set on the base.
+# deep-gemm 2.5.0+67fc648. CUDA 13 moved the CCCL headers; CPLUS_INCLUDE_PATH is set on the base.
 # CUTLASS and fmt are submodules under third-party/.
 FROM rl-cuda-ext-base AS rl-cuda-ext-deep-gemm
 RUN build-rl-cuda-ext-wheel.sh git https://github.com/deepseek-ai/DeepGEMM.git "$DEEP_GEMM_REV" --submodules

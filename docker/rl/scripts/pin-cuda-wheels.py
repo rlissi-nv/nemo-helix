@@ -131,8 +131,10 @@ find-links = ["/mnt/wheels"]"""
     # Bare names would resolve to whatever PyPI currently ships. Pin the
     # revisions this wheel image built. Git sources only attach to direct deps,
     # which is why mcore lists these next to megatron-bridge[ssm].
-    text = must_replace(text, '  "mamba-ssm",', '  "mamba-ssm==2.2.6.post3",', 2)
-    text = must_replace(text, '  "causal-conv1d",', '  "causal-conv1d==1.5.4",', 2)
+    # Versions are the ones stamped into the built wheels. NeMo-RL's
+    # dependency-metadata still names the older git revisions.
+    text = must_replace(text, '  "mamba-ssm",', '  "mamba-ssm==2.3.2.post1",', 2)
+    text = must_replace(text, '  "causal-conv1d",', '  "causal-conv1d==1.6.2.post1",', 2)
     text = must_replace(text, '  "nv-grouped-gemm",', '  "nv-grouped-gemm==1.1.4.post7",', 1)
     text = must_replace(
         text,
@@ -142,8 +144,8 @@ find-links = ["/mnt/wheels"]"""
     )
 
     text = must_replace(text, DEEP_EP_GIT, "deep_ep==1.2.1+17cfb81", 4)
-    text = must_replace(text, DEEP_GEMM_GIT, "deep_gemm==2.5.0", 1)
-    text = must_replace(text, FAST_HADAMARD_GIT, "fast-hadamard-transform==1.1.0", 1)
+    text = must_replace(text, DEEP_GEMM_GIT, "deep_gemm==2.5.0+67fc648", 1)
+    text = must_replace(text, FAST_HADAMARD_GIT, "fast-hadamard-transform==1.0.4.post1", 1)
 
     text = must_replace(
         text,
