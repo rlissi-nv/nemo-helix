@@ -17,6 +17,7 @@ is written via :func:`~nemo_evaluator.jobs.result_persistence.persist_agent_eval
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -33,6 +34,7 @@ from nemo_agents_plugin.environment_resolution import (
     EnvironmentResolutionError,
     merge_environment_spec_into_agent_config,
 )
+from nemo_agents_plugin.fabric.gateway_credentials import platform_gateway_credential_env
 from nemo_agents_plugin.fabric.translator import FabricTranslationError, translate_agent_config
 from nemo_evaluator.api.schemas import AgentRef
 from nemo_evaluator.config import get_config
@@ -46,14 +48,16 @@ from nemo_evaluator.jobs.agent_spec import (
     AgentEvalInputSpec,
     AgentEvalSpec,
     AgentTarget,
+    RegisteredAgentSource,
     FabricRunnerTarget,
     GymRunnerTarget,
     HarborRunnerTarget,
     ModelTarget,
-    RegisteredAgentSource,
     ResolvedTask,
     Target,
+    registered_agent_config,
     registered_agent_files,
+    registered_agent_source,
     validate_task_collection,
 )
 from nemo_evaluator.jobs.environment_stage import ENVIRONMENT_STORAGE_DIR
@@ -155,6 +159,47 @@ def _profile_dependency_unavailable(profile: str) -> HelixJobDependencyUnavailab
 #: The only registered-agent config format a runner exists for; ``nat-workflow-v1`` describes a NAT workflow.
 _FABRIC_AGENT_CONFIG_FORMAT = "nemo-agents-spec-v1"
 
+#: The Harbor agent a registered agent runs through: the SDK's installed Fabric agent, which brings its
+#: own Python and so runs on any task image, handed the whole config through ``fabric_config``.
+REGISTERED_AGENT_HARBOR_IMPORT_PATH = (
+    "nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_installed_agent:FabricInstalledAgent"
+)
+
+#: Fabric distribution extra that installs each harness adapter into the task container.
+_FABRIC_ADAPTER_EXTRAS: dict[str, str] = {
+    "nvidia.fabric.langchain.deepagents": "deepagents",
+    "nvidia.fabric.codex": "codex",
+    "nvidia.fabric.claude": "claude",
+    "nvidia.fabric.hermes": "hermes",
+}
+
+
+def _default_fabric_package(adapter_id: str) -> str:
+    """The ``nemo-fabric`` requirement that installs ``adapter_id``'s harness, pinned to this service's Fabric."""
+    extra = _FABRIC_ADAPTER_EXTRAS.get(adapter_id)
+    if extra is None:
+        raise ValueError(
+            f"no known Fabric package extra installs harness {adapter_id!r}; set `agent_kwargs.fabric_package` "
+            "to the requirement that does"
+        )
+    return f"nemo-fabric[{extra},relay]=={importlib.metadata.version('nemo-fabric')}"
+
+
+def _without_gateway_placeholders(config: dict[str, Any]) -> dict[str, Any]:
+    """The translated config minus the gateway placeholder credentials the Harbor agent adds itself.
+
+    Harbor persists ``agent_kwargs`` unredacted and refuses a credential-named value in them, placeholder
+    included; ``NemoFabricAgent`` restores the placeholder per trial from the model's ``api_key_env``.
+    """
+    env = dict(config.get("environment", {}).get("env", {}))
+    for payload in config.get("models", {}).values():
+        for name, placeholder in platform_gateway_credential_env({"models": {"default": payload}}).items():
+            if env.get(name) == placeholder:
+                del env[name]
+    if env == config.get("environment", {}).get("env", {}):
+        return config
+    return {**config, "environment": {**config["environment"], "env": env}}
+
 
 @dataclass(frozen=True)
 class _ResolvedRegisteredAgent:
@@ -237,25 +282,42 @@ async def _resolve_registered_agent(
     workspace: str,
     async_sdk: AsyncHelixClient | None,
 ) -> Target | None:
-    """Fill a Fabric runner target that names a registered ``agent`` with what that agent is.
+    """Fill a Fabric or Harbor runner target that names a registered agent with what that agent is.
 
-    The source keeps its ``agent``, workspace-qualified, and the config it resolved to becomes
-    ``resolved_config``; the job runs the agent fresh per trial without ever looking it up itself.
+    The source keeps its ``agent``, workspace-qualified. A Fabric target gets the config it resolved to as
+    ``resolved_config``; a Harbor target gets the installed Fabric agent selected and the config in its
+    kwargs. Either way the job runs the agent fresh per trial without ever looking it up itself.
     """
-    if not isinstance(target, FabricRunnerTarget) or target.resolved_config is not None:
+    if not isinstance(target, (FabricRunnerTarget, HarborRunnerTarget)):
         return target
-    source = target.source
-    if not isinstance(source, RegisteredAgentSource):
+    source = registered_agent_source(target)
+    if source is None or registered_agent_config(target) is not None:
         return target
 
     agent = await _load_registered_agent(
         source.agent.root, source.environment, workspace=workspace, async_sdk=async_sdk
     )
+    resolved_source = source.model_copy(update={"agent": agent.ref})
+    env_secrets = {**target.env_secrets, **agent.env_secrets}
+    if isinstance(target, FabricRunnerTarget):
+        return target.model_copy(
+            update={"source": resolved_source, "resolved_config": agent.config, "env_secrets": env_secrets}
+        )
+
+    adapter_id = agent.config["harness"]["adapter_id"]
+    fabric_package = target.agent_kwargs.get("fabric_package")
+    agent_kwargs: dict[str, Any] = {
+        **target.agent_kwargs,
+        "fabric_config": _without_gateway_placeholders(agent.config),
+        "fabric_package": fabric_package if isinstance(fabric_package, str) else _default_fabric_package(adapter_id),
+    }
     return target.model_copy(
         update={
-            "source": source.model_copy(update={"agent": agent.ref}),
-            "resolved_config": agent.config,
-            "env_secrets": {**target.env_secrets, **agent.env_secrets},
+            "registered_agent": resolved_source,
+            "agent_name": None,
+            "agent_import_path": REGISTERED_AGENT_HARBOR_IMPORT_PATH,
+            "agent_kwargs": agent_kwargs,
+            "env_secrets": env_secrets,
         }
     )
 
@@ -409,7 +471,7 @@ def _require_fabric_env_secrets_resolved(target: FabricRunnerTarget) -> None:
         )
 
 
-def _staged_agent_files(target: FabricRunnerTarget, ctx: JobContext) -> Path | None:
+def _staged_agent_files(target: FabricRunnerTarget | HarborRunnerTarget, ctx: JobContext) -> Path | None:
     """Where the preceding staging step put a registered agent's Ethos files, once it is verified present."""
     fileset = registered_agent_files(target)
     if fileset is None:
@@ -730,13 +792,17 @@ class _AgentEvalJobBase(NemoJob):
             )
             return gym_runtime, None, None
         if isinstance(target, HarborRunnerTarget):
+            agent_kwargs = dict(target.agent_kwargs)
+            staged = _staged_agent_files(target, ctx)
+            if staged is not None:
+                agent_kwargs["fabric_config_bundle"] = str(staged)
             harbor_runtime = HarborAgentTaskRunner(
                 config=HarborRuntimeConfig(
                     jobs_dir=ctx.storage.persistent / "harbor",
                     agent_name=target.agent_name,
                     agent_import_path=target.agent_import_path,
                     agent_model_name=target.agent_model_name,
-                    agent_kwargs=target.agent_kwargs,
+                    agent_kwargs=agent_kwargs,
                     agent_env_from_host=_harbor_agent_env_from_host(target),
                     n_attempts=target.n_attempts,
                     n_concurrent_trials=target.n_concurrent_trials,
@@ -744,6 +810,8 @@ class _AgentEvalJobBase(NemoJob):
                     artifacts=target.artifacts,
                     trace_dir=target.trace_dir,
                     reward_key=target.reward_key,
+                    agent_setup_timeout_multiplier=target.agent_setup_timeout_multiplier,
+                    agent_timeout_multiplier=target.agent_timeout_multiplier,
                 )
             )
             return harbor_runtime, None, None

@@ -275,7 +275,9 @@ independent of what is (or is not) deployed.
 | `capture_trajectory` | no | capture the ATIF trajectory and attach it to trial evidence |
 
 A registered-agent source has no `model`. If the agent's config refers to skills or prompts by relative
-path, its Ethos FileSet is staged into the job before the run so those paths resolve.
+path, its Ethos FileSet is staged into the job before the run so those paths resolve. The same source
+shape is the [Harbor target's `registered_agent`](/documentation/evaluate-models/agent-eval/harbor-fabric-agent#run-a-registered-agent),
+which runs the registered agent inside each task container instead of on the host.
 
 There is no model override: the model is part of what the agent *is*, so a different model is a
 different registered agent. What an evaluation does get to shape is the **environment** the agent runs

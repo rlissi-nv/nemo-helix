@@ -97,9 +97,7 @@ def _harbor_target(runner: HarborAgentTaskRunner) -> HarborRunnerTarget:
         "quiet": True,
         "agent_dir": None,
         "timeout_multiplier": None,
-        "agent_timeout_multiplier": None,
         "verifier_timeout_multiplier": None,
-        "agent_setup_timeout_multiplier": None,
         "environment_build_timeout_multiplier": None,
     }
     for field, default in required_defaults.items():
@@ -123,6 +121,10 @@ def _harbor_target(runner: HarborAgentTaskRunner) -> HarborRunnerTarget:
         "artifacts",
         "trace_dir",
         "reward_key",
+        # The agent-phase and agent-setup budgets travel: a self-installing agent (a Fabric harness, a
+        # registered agent) needs them job-side just as it does locally.
+        "agent_setup_timeout_multiplier",
+        "agent_timeout_multiplier",
     )
     try:
         target = HarborRunnerTarget(**{name: getattr(config, name) for name in carried_fields})

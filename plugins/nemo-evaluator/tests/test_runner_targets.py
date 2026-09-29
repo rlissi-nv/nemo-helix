@@ -35,7 +35,12 @@ HARBOR_CARRIED_VALUES = {
     "artifacts": ["/app/output"],
     "trace_dir": "/app/traces",
     "reward_key": "score",
+    "agent_setup_timeout_multiplier": 12.0,
+    "agent_timeout_multiplier": 5.0,
 }
+#: Harbor target fields with no runtime-config counterpart: a registered agent is a submission-time
+#: source the service resolves into the fields above, so a live runner never carries one.
+HARBOR_WIRE_ONLY_VALUES = {"registered_agent": None}
 HARBOR_REJECTED_VALUES = {
     "job_name": "existing-job",
     "force_rerun": True,
@@ -43,9 +48,7 @@ HARBOR_REJECTED_VALUES = {
     "agent_dir": Path("local-agent"),
     "agent_env_from_host": ["MODEL_API_KEY"],
     "timeout_multiplier": 2.0,
-    "agent_timeout_multiplier": 2.0,
     "verifier_timeout_multiplier": 2.0,
-    "agent_setup_timeout_multiplier": 2.0,
     "environment_build_timeout_multiplier": 2.0,
 }
 
@@ -59,7 +62,12 @@ def test_harbor_configuration_survives_submission_without_local_storage(tmp_path
         scoped.setattr(Path, "mkdir", Mock(side_effect=AssertionError("local filesystem modified")))
         target = runner_to_target(runner)
     assert isinstance(target, HarborRunnerTarget)
-    assert target.model_dump(mode="json") == {"kind": "harbor", "env_secrets": {}, **HARBOR_CARRIED_VALUES}
+    assert target.model_dump(mode="json") == {
+        "kind": "harbor",
+        "env_secrets": {},
+        **HARBOR_WIRE_ONLY_VALUES,
+        **HARBOR_CARRIED_VALUES,
+    }
 
 
 def test_every_harbor_runtime_field_has_a_submission_policy():

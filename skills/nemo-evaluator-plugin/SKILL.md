@@ -166,7 +166,9 @@ target is a `ModelTarget`, `AgentTarget`, `FabricRunnerTarget`,
 
 A `FabricRunnerTarget`'s `source` is an inline config (`{"kind": "fabric",
 "source": {"config": {...}}}`) or a registered agent (`nemo agents create`):
-`{"kind": "fabric", "source": {"agent": "<name>"}}`. At submit time the service resolves
+`{"kind": "fabric", "source": {"agent": "<name>"}}`. A `HarborRunnerTarget` takes
+the same shape as `registered_agent` (`{"kind": "harbor", "registered_agent":
+{"agent": "<name>"}}`) to run it inside each task container. At submit time the service resolves
 the agent exactly as a deployment would — models bound to the workspace
 Inference Gateway, no credentials in the spec — and runs it fresh for every
 trial; it never calls an existing deployment. An optional `environment` (the
