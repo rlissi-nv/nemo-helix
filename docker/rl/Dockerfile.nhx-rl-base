@@ -414,10 +414,12 @@ ENV VIRTUAL_ENV=/opt/nemo_rl_venv \
     NO_VCS_VERSION=1
 
 # Parents of the venv dirs are group-writable so runtime can add venvs.
-# Prefetched venvs stay build-owned. /opt/uv_cache stays read-only: user Gym
-# code must not rewrite the code the trainer runs.
+# Prefetched venvs stay build-owned. uv writes some cache files mode 0600;
+# the runtime user still has to read them, because the venvs symlink into
+# /opt/uv_cache. The cache stays owned by root, so Gym code cannot rewrite it.
 RUN chown root:${RUNTIME_GID} /opt/ray_venvs /opt/gym_venvs && \
-    chmod 1775 /opt/ray_venvs /opt/gym_venvs
+    chmod 1775 /opt/ray_venvs /opt/gym_venvs && \
+    chmod -R a+rX /opt/cpython /opt/uv_cache /opt/nemo_rl_venv /opt/nemo-rl /opt/gym_venvs /opt/ray_venvs
 
 # NeMo-RL patches vllm in place and writes a per-venv py_executable. The shared
 # symlink is read-only and would be one copy for every venv. cp -rL makes each
