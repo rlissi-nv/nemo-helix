@@ -65,6 +65,20 @@ class GymAgentTaskRunner:
     records out into one trial per ``_ng_rollout_index``. Because we assign the index,
     attribution is a dict lookup rather than a positional guess, and Gym only rolls out
     the tasks we asked for. The durable task **identity** stays our content hash.
+
+    ``secret_resolver`` supplies values for ``config.env_secrets`` in Gym's subprocess environment:
+
+    * ``None`` (the default) uses :class:`~nemo_evaluator_sdk.resolvers.LocalSecretResolver`
+      to read secrets from this process's environment.
+    * A :class:`~nemo_evaluator_sdk.resolver_protocols.SecretResolver` returns each value
+      directly from its secret reference, for example from a custom vault. ``None`` means
+      missing; an empty string remains a value.
+    * An :class:`~nemo_evaluator_sdk.resolver_protocols.EnvSecretSource` names the existing
+      environment variable holding each secret. Platform jobs use this form because the
+      injected variable's name depends on the ``env_secrets`` key. An unset or empty
+      variable is missing.
+
+    If an object implements both protocols, its value-resolution method takes precedence.
     """
 
     def __init__(
@@ -132,6 +146,7 @@ class GymAgentTaskRunner:
     ) -> list[AgentEvalTrial]:
         cfg = self._config
         self._run_aggregations = None  # reset per run so a reused runner never leaks a prior run's numbers
+        # don't cache the resolved env secrets in self because they may change between runs
         resolved_env = await resolve_env_secrets(cfg.env_secrets, self._secret_resolver)
         # Provenance for the log line only — the file Gym actually reads is the normalized one we
         # materialize below from the tasks themselves.

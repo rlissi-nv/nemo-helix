@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
+from nemo_evaluator_sdk.resolver_protocols import EnvSecretSource
 from nemo_evaluator_sdk.values.common import SecretRef
 from nemo_helix_plugin.jobs.api_factory import EnvironmentVariable, EnvironmentVariableFromSecret
 from nemo_helix_plugin.jobs.constants import DEFAULT_JOB_STORAGE_PATH, PERSISTENT_JOB_STORAGE_PATH_ENVVAR
@@ -26,10 +27,13 @@ GYM_SANDBOX_PLAN_ENVVAR = "NEMO_EVALUATOR_GYM_SANDBOX_PLAN"
 RESERVED_SECRET_ENV_NAMES = frozenset({PERSISTENT_JOB_STORAGE_PATH_ENVVAR, GYM_SANDBOX_PLAN_ENVVAR})
 
 
-class JobEnvSecretResolver:
-    """Name the env var holding each ``env_secrets`` entry inside a platform job.
+class JobEnvSecretResolver(EnvSecretSource):
+    """Name the environment variable holding each ``env_secrets`` entry in a platform job.
 
-    The service injects every secret under its ``env_secrets`` key. No other variable is consulted.
+    The service injects every secret under its ``env_secrets`` key. ``find_env_name`` returns
+    that variable's name when its value is non-empty; no other variable is consulted.
+    This source names an existing variable rather than implementing ``SecretResolver``'s
+    value-returning ``resolve_secret`` method.
     """
 
     def __init__(self, *, workspace: str) -> None:
