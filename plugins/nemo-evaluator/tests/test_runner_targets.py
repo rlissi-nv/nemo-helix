@@ -186,6 +186,19 @@ def test_a_gym_runner_describes_itself_as_a_submittable_target() -> None:
     assert target.model_dump(exclude=WIRE_ONLY_TARGET_FIELDS) == config.model_dump()
 
 
+def test_gym_runner_submission_carries_refs_but_not_custom_resolver() -> None:
+    class Resolver:
+        async def resolve_secret(self, secret_ref: SecretRef) -> str | None:
+            return "private-value"
+
+    config = GymRuntimeConfig(
+        agent="a", agent_config="a.yaml", resources_server="r", env_secrets={"KEY": SecretRef("ws/key")}
+    )
+    target = runner_to_target(GymAgentTaskRunner(config=config, secret_resolver=Resolver()))
+    assert target.env_secrets == {"KEY": SecretRef("ws/key")}
+    assert "private-value" not in target.model_dump_json()
+
+
 def test_every_field_actually_travels_rather_than_defaulting() -> None:
     # Guards the failure this conversion exists to prevent: a field silently dropped, so the
     # submitted job runs something different from what was tested. Asserting values differ from

@@ -33,8 +33,8 @@ class EnvSecretSource(Protocol):
     * ``HarborAgentTaskRunner(secret_resolver=...)``: the resolver's type, checked at construction
       (hence ``runtime_checkable``), so a resolver that can't name env vars fails early.
     * ``harbor_env_templates``: finds each ``env_secrets`` source variable and templates it.
-    * ``resolve_env_secrets`` (Gym's value path): uses ``missing_secret_message`` when a resolver
-      provides it.
+    * ``resolve_env_secrets`` (Gym's value path): reads the named variable for env-only sources,
+      and uses ``missing_secret_message`` when a value resolver reports a missing secret.
     """
 
     def find_env_name(self, secret_ref: SecretRef, env_name: str) -> str | None:

@@ -49,7 +49,7 @@ from nemo_evaluator_sdk.agent_eval.runtimes.provenance import redact_credentials
 from nemo_evaluator_sdk.agent_eval.runtimes.secrets import resolve_env_secrets
 from nemo_evaluator_sdk.agent_eval.tasks import AgentEvalRunConfig, AgentEvalTask
 from nemo_evaluator_sdk.agent_eval.trials import AgentEvalTrial, RunnerInfo
-from nemo_evaluator_sdk.resolver_protocols import SecretResolver
+from nemo_evaluator_sdk.resolver_protocols import EnvSecretSource, SecretResolver
 from nemo_evaluator_sdk.resolvers import LocalSecretResolver
 from nemo_evaluator_sdk.values.results import AggregateScore
 
@@ -67,19 +67,12 @@ class GymAgentTaskRunner:
     the tasks we asked for. The durable task **identity** stays our content hash.
     """
 
-    def __init__(self, *, config: GymRuntimeConfig) -> None:
+    def __init__(
+        self, *, config: GymRuntimeConfig, secret_resolver: SecretResolver | EnvSecretSource | None = None
+    ) -> None:
         self._config = config
         self._run_aggregations: dict[str, Any] | None = None
-        self._resolved_env: dict[str, str] = {}
-        self._secrets_resolved = False
-
-    async def resolve_secrets(self, secret_resolver: SecretResolver) -> None:
-        """Resolve ``config.env_secrets``, keyed by the env var Gym reads each one from.
-
-        Call before :meth:`run_tasks`, which otherwise resolves locally.
-        """
-        self._resolved_env = await resolve_env_secrets(self._config.env_secrets, secret_resolver)
-        self._secrets_resolved = True
+        self._secret_resolver = secret_resolver if secret_resolver is not None else LocalSecretResolver()
 
     @property
     def config(self) -> GymRuntimeConfig:
@@ -127,6 +120,7 @@ class GymAgentTaskRunner:
                 "bind_resources_server": cfg.bind_resources_server,
                 "hydra_params": redact_credentials(cfg.hydra_params),
                 "env_vars": redact_credentials(cfg.env_vars),
+                "env_secrets": {name: ref.root for name, ref in cfg.env_secrets.items()},
                 "reward_key": cfg.reward_key,
             },
         )
@@ -138,8 +132,7 @@ class GymAgentTaskRunner:
     ) -> list[AgentEvalTrial]:
         cfg = self._config
         self._run_aggregations = None  # reset per run so a reused runner never leaks a prior run's numbers
-        if not self._secrets_resolved:
-            await self.resolve_secrets(LocalSecretResolver())
+        resolved_env = await resolve_env_secrets(cfg.env_secrets, self._secret_resolver)
         # Provenance for the log line only — the file Gym actually reads is the normalized one we
         # materialize below from the tasks themselves.
         source_dataset = source_datasets(tasks)
@@ -170,7 +163,7 @@ class GymAgentTaskRunner:
             input_path,
         )
 
-        await self._run_two_step(input_path, rollouts_path, work_dir)
+        await self._run_two_step(input_path, rollouts_path, work_dir, resolved_env)
         self._run_aggregations = read_run_aggregations(rollouts_path)
         trials = trials_from_rollouts(
             rollouts_path,
@@ -230,7 +223,9 @@ class GymAgentTaskRunner:
             )
         logger.debug("gym env validate: %s", report)
 
-    async def _run_two_step(self, input_path: Path, output_path: Path, work_dir: Path) -> None:
+    async def _run_two_step(
+        self, input_path: Path, output_path: Path, work_dir: Path, resolved_env: Mapping[str, str]
+    ) -> None:
         """Start the Gym servers, collect against them with ``--no-serve``, then tear them down."""
         cfg = self._config
         gym = gym_executable()
@@ -240,7 +235,7 @@ class GymAgentTaskRunner:
         # detects a `uv run` ancestor and tries to replicate that uv project onto its workers,
         # asserting the project pyproject.toml lives in the driver's cwd — which aborts startup. That
         # hook is wrong for Gym (servers manage their own deps), so disable it for the subprocesses.
-        subprocess_env = gym_invocation_env(cfg, self._resolved_env)
+        subprocess_env = gym_invocation_env(cfg, resolved_env)
 
         selection = selection_args(cfg, work_dir)
 

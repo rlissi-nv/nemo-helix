@@ -12,8 +12,10 @@ here.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 
+from nemo_evaluator_sdk.values.common import SecretRef
 from nemo_helix_plugin.jobs.api_factory import EnvironmentVariable, EnvironmentVariableFromSecret
 from nemo_helix_plugin.jobs.constants import DEFAULT_JOB_STORAGE_PATH, PERSISTENT_JOB_STORAGE_PATH_ENVVAR
 
@@ -22,6 +24,29 @@ GYM_SANDBOX_PLAN_ENVVAR = "NEMO_EVALUATOR_GYM_SANDBOX_PLAN"
 
 #: Env names a job sets itself, so they cannot be sourced from a secret ref.
 RESERVED_SECRET_ENV_NAMES = frozenset({PERSISTENT_JOB_STORAGE_PATH_ENVVAR, GYM_SANDBOX_PLAN_ENVVAR})
+
+
+class JobEnvSecretResolver:
+    """Name the env var holding each ``env_secrets`` entry inside a platform job.
+
+    The service injects every secret under its ``env_secrets`` key. No other variable is consulted.
+    """
+
+    def __init__(self, *, workspace: str) -> None:
+        self._workspace = workspace
+
+    def find_env_name(self, secret_ref: SecretRef, env_name: str) -> str | None:
+        """``env_name`` when the service injected a non-empty value under it, else ``None``."""
+        return env_name if os.environ.get(env_name) else None
+
+    def missing_secret_message(self, secret_ref: SecretRef, env_name: str) -> str:
+        """Point at the secret in its workspace: the ref's own, or the job's for a bare ref."""
+        workspace, sep, name = secret_ref.root.rpartition("/")
+        workspace = workspace if sep else self._workspace
+        return (
+            f"secret {secret_ref.root!r} was not injected into this job's environment. Check the secret exists "
+            f"in workspace {workspace!r}: nemo secrets get {name} --workspace {workspace}"
+        )
 
 
 def build_task_environment(secret_refs: Iterable[tuple[str, str]]) -> list[EnvironmentVariable]:

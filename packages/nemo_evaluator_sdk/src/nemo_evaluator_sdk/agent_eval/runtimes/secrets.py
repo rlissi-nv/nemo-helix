@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 
 from nemo_evaluator_sdk.resolver_protocols import EnvSecretSource, SecretResolver
@@ -17,8 +18,23 @@ def _missing_secret_message(resolver: SecretResolver | EnvSecretSource, secret_r
     return f"secret {secret_ref.root!r} could not be resolved by {type(resolver).__name__}."
 
 
-async def resolve_env_secrets(env_secrets: Mapping[str, SecretRef], resolver: SecretResolver) -> dict[str, str]:
+def env_secret_values(env_secrets: Mapping[str, SecretRef], source: EnvSecretSource) -> dict[str, str]:
+    """Read each secret from the environment variable named by ``source``."""
+    values: dict[str, str] = {}
+    for env_name, secret_ref in env_secrets.items():
+        found = source.find_env_name(secret_ref, env_name)
+        if found is None:
+            raise ValueError(f"env_secrets[{env_name!r}] -> {source.missing_secret_message(secret_ref, env_name)}")
+        values[env_name] = os.environ[found]
+    return values
+
+
+async def resolve_env_secrets(
+    env_secrets: Mapping[str, SecretRef], resolver: SecretResolver | EnvSecretSource
+) -> dict[str, str]:
     """Resolve ``env_secrets`` to values, keyed by the env var each one is handed over as."""
+    if not isinstance(resolver, SecretResolver):
+        return env_secret_values(env_secrets, resolver)
     resolved: dict[str, str] = {}
     for env_name, secret_ref in env_secrets.items():
         value = await resolver.resolve_secret(secret_ref)

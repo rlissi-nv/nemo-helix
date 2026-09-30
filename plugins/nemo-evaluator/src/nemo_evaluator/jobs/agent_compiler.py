@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from nemo_evaluator.config import config, platform_config
 from nemo_evaluator.jobs.agent_spec import AgentEvalSpec, AgentTarget, GymRunnerTarget, HarborRunnerTarget, ModelTarget
 from nemo_evaluator.jobs.environment_stage import EnvironmentStageSpec
-from nemo_evaluator.jobs.gym_sandbox import GYM_SANDBOX_PLAN_ENVVAR, SandboxPlan, resolve_sandbox_plan
-from nemo_evaluator.jobs.secret_env import build_task_environment
+from nemo_evaluator.jobs.gym_sandbox import SandboxPlan, resolve_sandbox_plan
+from nemo_evaluator.jobs.secret_env import GYM_SANDBOX_PLAN_ENVVAR, build_task_environment
 from nemo_helix_plugin.jobs.api_factory import (
     ContainerSpec,
     CPUExecutionProviderSpec,

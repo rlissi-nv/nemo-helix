@@ -11,6 +11,7 @@ cannot ride into user-supplied environment code.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from nemo_evaluator.jobs.agent_spec import GymRunnerTarget
 from nemo_evaluator.jobs.gym_sandbox import (
     SandboxPlan,
     SandboxUnavailableError,
+    SessionBackedGymRunner,
     credential_shaped_env_vars,
     gym_global_config,
     require_fileset_environment_sandboxed,
@@ -580,11 +582,57 @@ def test_a_resolved_env_secret_reaches_the_host(monkeypatch: pytest.MonkeyPatch)
     assert payload["host_env"]["OPENAI_API_KEY"] == "sk-resolved"
 
 
-def test_an_unresolved_env_secret_is_named_rather_than_silently_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("ref", "workspace"), [("ws/openai", "ws"), ("openai", "team")])
+def test_an_unresolved_env_secret_is_named_rather_than_silently_missing(
+    monkeypatch: pytest.MonkeyPatch, ref: str, workspace: str
+) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    with pytest.raises(SandboxUnavailableError, match="OPENAI_API_KEY"):
+    with pytest.raises(SandboxUnavailableError, match=f"nemo secrets get openai --workspace {workspace}"):
+        serve_config(target(env_secrets={"OPENAI_API_KEY": ref}), capable_plan(), job_id="job-1", workspace="team")
+
+
+def test_an_empty_injected_secret_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    with pytest.raises(SandboxUnavailableError, match="nemo secrets get openai --workspace ws"):
         serve_config(target(env_secrets={"OPENAI_API_KEY": "ws/openai"}), capable_plan(), job_id="job-1")
+
+
+@pytest.mark.asyncio
+async def test_session_runner_records_target_provenance_before_and_after_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sandboxed_gym
+    from nemo_evaluator_sdk.agent_eval.runtimes.gym.sandboxed import SandboxedGymAgentTaskRunner
+
+    monkeypatch.setenv("OPENAI_API_KEY", "injected")
+    runner = SessionBackedGymRunner(
+        target=target(env_secrets={"OPENAI_API_KEY": "ws/openai"}), plan=capable_plan(), job_id="job-1"
+    )
+    expected = {"env_secrets": {"OPENAI_API_KEY": "ws/openai"}, "resources_server": "mcqa", "agent": "simple_agent"}
+    for key, value in expected.items():
+        assert runner.runner_info().config[key] == value
+
+    class Session:
+        def descriptor(self):
+            return SimpleNamespace(rollout_url="http://host", rollout_auth_token=None, headers={})
+
+        def shutdown(self):
+            pass
+
+    class Orchestrator:
+        def start(self, config):
+            return Session()
+
+    async def collect(self, tasks, config):
+        return []
+
+    monkeypatch.setattr(sandboxed_gym, "SandboxedGymOrchestrator", Orchestrator)
+    monkeypatch.setattr(SandboxedGymAgentTaskRunner, "run_tasks", collect)
+    assert await runner.run_tasks([]) == []
+    for key, value in expected.items():
+        assert runner.runner_info().config[key] == value
+    assert runner.runner_info().config["rollout_url"] == "http://host"
 
 
 def test_the_host_env_reaches_the_built_spec() -> None:
