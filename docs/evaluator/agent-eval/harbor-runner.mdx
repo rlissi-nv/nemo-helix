@@ -15,6 +15,19 @@ the verifier rewards through agent-eval — the same
 [`AgentEvaluator`](/documentation/evaluate-models/agent-eval) and the same result and bundle as the
 [quickstart](/documentation/evaluate-models/agent-eval/quickstart). Only the runner changes.
 
+<Note>
+
+**Import path change:** Update Python imports and saved `agent_import_path` values that use these
+previous SDK modules. The previous paths are no longer available:
+
+| Previous module | Current module |
+|---|---|
+| `nemo_evaluator_sdk.agent_eval.runtimes.harbor_runtime` | `nemo_evaluator_sdk.agent_eval.runtimes.harbor.runtime` |
+| `nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_agent` | `nemo_evaluator_sdk.agent_eval.runtimes.harbor.fabric_agent` |
+| `nemo_evaluator_sdk.agent_eval.runtimes.harbor_fabric_installed_agent` | `nemo_evaluator_sdk.agent_eval.runtimes.harbor.fabric_installed_agent` |
+
+</Note>
+
 <Warning>
 
 Unlike the quickstart, this runner is **not** zero-dependency — it shells out to Harbor and Docker:
