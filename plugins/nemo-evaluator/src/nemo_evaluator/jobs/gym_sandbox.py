@@ -24,6 +24,7 @@ from typing import Any
 
 from nemo_evaluator.config import EvaluatorConfig
 from nemo_evaluator.jobs.agent_spec import GymRunnerTarget
+from nemo_evaluator.jobs.secret_env import GYM_SANDBOX_PLAN_ENVVAR
 from nemo_helix_plugin.jobs.execution_profiles import (
     KubernetesJobExecutionProfile,
     VolcanoJobExecutionProfile,
@@ -156,11 +157,6 @@ def require_no_plaintext_credentials(target: GymRunnerTarget) -> None:
         f"own code: {', '.join(exposed)}. Move them to `env_secrets` as secret references, which the "
         "service resolves into the job environment, or disable sandboxed execution for this deployment."
     )
-
-
-#: Step-environment variable carrying the resolved :class:`SandboxPlan` to the job. Its presence
-#: *is* the decision to sandbox: the job container has no evaluator configuration to consult.
-GYM_SANDBOX_PLAN_ENVVAR = "NEMO_EVALUATOR_GYM_SANDBOX_PLAN"
 
 
 class SandboxPlan(BaseModel):

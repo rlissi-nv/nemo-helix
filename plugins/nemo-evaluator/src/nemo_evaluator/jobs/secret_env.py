@@ -17,8 +17,11 @@ from collections.abc import Iterable
 from nemo_helix_plugin.jobs.api_factory import EnvironmentVariable, EnvironmentVariableFromSecret
 from nemo_helix_plugin.jobs.constants import DEFAULT_JOB_STORAGE_PATH, PERSISTENT_JOB_STORAGE_PATH_ENVVAR
 
+#: Step variable carrying the operator's sandbox decision to the job.
+GYM_SANDBOX_PLAN_ENVVAR = "NEMO_EVALUATOR_GYM_SANDBOX_PLAN"
+
 #: Env names a job sets itself, so they cannot be sourced from a secret ref.
-RESERVED_SECRET_ENV_NAMES = frozenset({PERSISTENT_JOB_STORAGE_PATH_ENVVAR})
+RESERVED_SECRET_ENV_NAMES = frozenset({PERSISTENT_JOB_STORAGE_PATH_ENVVAR, GYM_SANDBOX_PLAN_ENVVAR})
 
 
 def build_task_environment(secret_refs: Iterable[tuple[str, str]]) -> list[EnvironmentVariable]:

@@ -21,3 +21,8 @@ def test_two_secrets_under_one_env_name_are_refused_naming_both() -> None:
 def test_one_secret_under_several_consumers_is_emitted_once() -> None:
     environment = build_task_environment([("OPENAI_API_KEY", "openai-key"), ("OPENAI_API_KEY", "openai-key")])
     assert [variable.name for variable in environment].count("OPENAI_API_KEY") == 1
+
+
+def test_sandbox_plan_cannot_be_sourced_from_a_secret() -> None:
+    with pytest.raises(ValueError, match="NEMO_EVALUATOR_GYM_SANDBOX_PLAN.*reserved"):
+        build_task_environment([("NEMO_EVALUATOR_GYM_SANDBOX_PLAN", "ws/plan")])
