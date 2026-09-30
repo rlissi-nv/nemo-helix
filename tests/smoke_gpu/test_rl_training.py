@@ -341,6 +341,37 @@ def test_grpo_driver_module_imports():
 
 
 @pytest.mark.smoke_nhx_rl_training
+def test_gym_in_tree_cache_is_metadata_only():
+    """NRL_CONTAINER=1 keeps Gym from writing a package cache into its source tree."""
+    cache = Path("/opt/nemo-rl/3rdparty/Gym-workspace/Gym/cache")
+    if not cache.is_dir():
+        return
+    size = sum(path.stat().st_size for path in cache.rglob("*") if path.is_file())
+    assert size <= 100 * 1024 * 1024, f"{cache} is {size} bytes; Gym should use UV_CACHE_DIR"
+
+
+@pytest.mark.smoke_nhx_rl_training
+def test_runtime_user_can_read_image_trees():
+    """Build steps use umask 022 so the runtime user can load these trees."""
+    roots = (
+        Path("/opt/cpython"),
+        Path("/opt/uv_cache"),
+        Path("/opt/nemo_rl_venv"),
+        Path("/opt/nemo-rl"),
+        Path("/opt/gym_venvs"),
+        Path("/opt/ray_venvs"),
+    )
+    for root in roots:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            assert os.access(dirpath, os.R_OK | os.X_OK), f"{dirpath} is not traversable"
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                assert os.access(path, os.R_OK), f"{path} is not readable"
+                if os.stat(path).st_mode & 0o111:
+                    assert os.access(path, os.X_OK), f"{path} is not executable"
+
+
+@pytest.mark.smoke_nhx_rl_training
 def test_no_git_directories_shipped():
     """The published image must not carry repository history.
 

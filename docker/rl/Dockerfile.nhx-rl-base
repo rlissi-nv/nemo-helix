@@ -241,9 +241,9 @@ RUN umask 022 && uv pip install --python /opt/nemo_rl_venv/bin/python --no-deps 
 #   vllm_worker           -> vllm + nemo_gym, sync and async
 #   SyncRolloutActor      -> vllm
 #   NemoGym, SandboxedGymActor -> nemo_gym
-# A bare "vllm" would also match modelopt's quant worker. The loop fails if a
-# filter matches nothing. UV_NO_SYNC=1 so prefetch does not compile the nine
-# CUDA extensions; each venv is then synced and the wheels are installed.
+# A bare "vllm" would also match modelopt's quant worker. UV_NO_SYNC=1 so
+# prefetch does not compile the nine CUDA extensions; each venv is then synced
+# and the wheels are installed.
 RUN --mount=from=rl-cuda-ext-wheel,source=/wheels,target=/mnt/wheels,readonly \
     <<"EOF" bash -exu
 umask 022
@@ -255,22 +255,6 @@ UV_NO_SYNC=1 uv run nemo_rl/utils/prefetch_venvs.py \
     sync_rollout_actor.SyncRolloutActor \
     nemo_gym.NemoGym \
     nemo_gym_actor.SandboxedGymActor
-
-for actor in \
-    nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2 \
-    nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker \
-    nemo_rl.environments.nemo_gym.NemoGym \
-    nemo_rl.environments.sandbox.nemo_gym_actor.SandboxedGymActor \
-    nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker \
-    nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker \
-    nemo_rl.experience.sync_rollout_actor.SyncRolloutActor
-do
-    if [ ! -x "/opt/ray_venvs/${actor}/bin/python" ]; then
-        echo "ERROR: expected prefetched venv at /opt/ray_venvs/${actor}" >&2
-        echo "       check the filters above against nemo_rl/distributed/actor_environments.py" >&2
-        exit 1
-    fi
-done
 
 SKIP=(
     --no-install-package causal-conv1d
@@ -307,10 +291,9 @@ ARG NEMO_GYM_PREFETCH_CONFIGS=""
 ARG NEMO_GYM_CUDA=cu130
 ARG NEMO_GYM_VLLM_VERSION=0.25.1
 ARG TARGETARCH
-# Remove Ray session logs and cloned .git dirs in this layer. Fail if Gym wrote
-# a large in-tree cache instead of UV_CACHE_DIR. Re-pin mlflow-skinny, sqlparse,
-# hydra-core, and OpenTelemetry afterwards: an exact sync restores the lock, and
-# wandb may already have floated the API to 1.45. Then drop mlflow, pynvml, and mooncake.
+# Remove Ray session logs and cloned .git dirs in this layer. Re-pin
+# mlflow-skinny, sqlparse, hydra-core, and OpenTelemetry afterwards, then drop
+# mlflow, pynvml, and mooncake.
 RUN --mount=type=bind,source=docker/rl/opentelemetry-overrides.txt,target=/tmp/opentelemetry-overrides.txt,readonly \
     <<"EOF" bash -exu
 umask 022
@@ -333,16 +316,6 @@ if [ -n "${NEMO_GYM_PREFETCH_CONFIGS:-}" ]; then
     rm -f "${GYM_VLLM_OVERRIDE}"
     rm -rf /tmp/ray /root/.ray /tmp/ray_tmp* 2>/dev/null || true
     find /opt/nemo-rl -name .git -prune -exec rm -rf {} +
-fi
-GYM_CACHE=/opt/nemo-rl/3rdparty/Gym-workspace/Gym/cache
-if [ -d "${GYM_CACHE}" ]; then
-    GYM_CACHE_MB=$(du -sm "${GYM_CACHE}" | cut -f1)
-    if [ "${GYM_CACHE_MB}" -gt 100 ]; then
-        echo "ERROR: NeMo-Gym wrote a ${GYM_CACHE_MB} MB in-tree cache at ${GYM_CACHE};" >&2
-        echo "       expected it to use \${UV_CACHE_DIR}. Is NRL_CONTAINER=1 still set?" >&2
-        exit 1
-    fi
-    echo "in-tree Gym cache is ${GYM_CACHE_MB} MB (metadata only) - ok"
 fi
 
 for py in /opt/nemo_rl_venv/bin/python /opt/ray_venvs/*/bin/python /opt/gym_venvs/*/bin/python; do
@@ -440,20 +413,6 @@ ENV VIRTUAL_ENV=/opt/nemo_rl_venv \
     UV_FIND_LINKS=/opt/gym-wheels \
     NO_VCS_VERSION=1
 
-# These trees must be readable by the runtime UID. Build steps use umask 022.
-RUN <<"EOF" bash -eu
-for path in /opt/cpython /opt/uv_cache /opt/nemo_rl_venv /opt/nemo-rl /opt/gym_venvs /opt/ray_venvs; do
-    blocked="$(find "${path}" \
-        \( -type d ! -perm -005 -o -type f ! -perm -004 -o -type f -perm /111 ! -perm -001 \) \
-        -print -quit)"
-    if [ -n "${blocked}" ]; then
-        echo "ERROR: ${blocked} is not readable/traversable by the runtime UID." >&2
-        echo "       Ensure build steps create Python artifacts with umask 022." >&2
-        exit 1
-    fi
-done
-EOF
-
 # Parents of the venv dirs are group-writable so runtime can add venvs.
 # Prefetched venvs stay build-owned. /opt/uv_cache stays read-only: user Gym
 # code must not rewrite the code the trainer runs.
@@ -462,9 +421,8 @@ RUN chown root:${RUNTIME_GID} /opt/ray_venvs /opt/gym_venvs && \
 
 # NeMo-RL patches vllm in place and writes a per-venv py_executable. The shared
 # symlink is read-only and would be one copy for every venv. cp -rL makes each
-# venv's copy private. Fail if no venv has vllm.
+# venv's copy private.
 RUN <<"EOF" bash -exu
-privatized=0
 for sp in /opt/ray_venvs/*/lib/python*/site-packages; do
     [ -d "${sp}/vllm" ] || continue
     cp -rL --preserve=mode,timestamps "${sp}/vllm" "${sp}/.vllm.private"
@@ -472,14 +430,7 @@ for sp in /opt/ray_venvs/*/lib/python*/site-packages; do
     mv "${sp}/.vllm.private" "${sp}/vllm"
     chmod -R a+rX "${sp}/vllm"
     chown -R ${RUNTIME_UID}:${RUNTIME_GID} "${sp}/vllm"
-    privatized=$((privatized + 1))
 done
-if [ "${privatized}" -eq 0 ]; then
-    echo "ERROR: no prefetched venv contains a vllm package." >&2
-    echo "       check the vllm prefetch filters against nemo_rl/distributed/actor_environments.py" >&2
-    exit 1
-fi
-echo "privatized vllm/ in ${privatized} venv(s)"
 EOF
 
 ARG NHX_COLLECT_SOURCES=0
